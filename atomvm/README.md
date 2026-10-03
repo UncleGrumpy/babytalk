@@ -199,7 +199,7 @@ from your app. A different board needs no rebuild, as long as it uses these part
 | **Everest ES8311** | mono codec: its DAC for the speaker, and/or its ADC for a mic | I2C + I2S | `speaker => #{codec => es8311}`, `mic => #{codec => es8311}` |
 | speaker amp enable (NS4150B and the like) | on only while playing (no hiss, no pop) | a GPIO, or an I2C IO expander pin | `amp => ...` |
 | audio power rail (optional) | on from bring-up | the same | `power => ...` |
-| IO expanders | **WCH CH32V003** as Waveshare programs it (8 pins, write-only latch: we keep a shadow), **PCA9555 / TCA9555 / XL9555** (16 pins) | I2C | `{ch32v003, Addr, Pin}`, `{pca9555, Addr, Pin}` |
+| IO expanders | **WCH CH32V003** as Waveshare programs it (8 pins, write-only latch: we keep a shadow), **PCA9555 / TCA9555 / XL9555** (16 pins), **Diodes PI4IOE5V6408** (8 pins, write-only config: we keep a shadow) | I2C | `{ch32v003, Addr, Pin}`, `{pca9555, Addr, Pin}`, `{pi4ioe5v6408, Addr, Pin}` |
 
 The ESP32 is always the I2S master with MCLK = 256 x Fs, so each codec needs one fixed set
 of clock dividers for every sample rate. The mic and the speaker share one I2S port and take
@@ -251,7 +251,7 @@ preset): `#{i2s => #{din => 21}}` keeps the other I2S pins. The full form, with 
 | `mic.slot` | `left` or `right`: the I2S slot the mic is on |
 | `speaker.codec` | `es8311` or `none` (also: `speaker => none`) |
 | `address` | the chip's 7-bit I2C address |
-| `amp`, `power` | `none` · `{gpio, Pin}` · `{ch32v003, Addr, Pin}` · `{pca9555, Addr, Pin}`, each optionally with `active_low` as a last element: `{gpio, 46, active_low}` |
+| `amp`, `power` | `none` · `{gpio, Pin}` · `{ch32v003, Addr, Pin}` · `{pca9555, Addr, Pin}` · `{pi4ioe5v6408, Addr, Pin}`, each optionally with `active_low` as a last element: `{gpio, 46, active_low}` |
 
 With one ES8311 as both mic and speaker (same address in both), it's set up for both
 directions at once; an ES8311 as speaker only gets the DAC-only setup.
@@ -289,6 +289,34 @@ next to the new one (which ours uses), so `sdkconfig.babytalk` sets
 `CONFIG_AVM_ENABLE_I2C_PORT_DRIVER=n` and `..._RESOURCE_NIFS=n`. Revisit when AtomVM moves to
 the new driver.
 
+### A switched board part on an expander pin: the Tab5's C6
+
+Not everything on an IO expander is audio. The M5Stack Tab5 switches its **on-board ESP32-C6's
+rail** with pin 0 of the PI4IOE5V6408 at `0x44` (`WLAN_PWR_EN`), and the C6 is what gives a
+Tab5 its WiFi. Nothing else drives that pin, so the C6 stays off -- and `esp_hosted` never gets
+a link -- until the app says so:
+
+```erlang
+ok = babytalk:io_pin_set(#{port => 0, sda => 31, scl => 32}, 16#44, 0, 1),   % the C6's rail on
+ok = babytalk:audio_config(m5stack_tab5).                                    % the Tab5's codecs
+```
+
+`io_pin_set(I2c, Addr, Pin, Level)` takes the same `i2c` section `audio_config/1` does (`sda`
+31, `scl` 32 is the Tab5's system I2C), an expander address, a pin 0..7 and a level (0 or 1).
+It drives **only that pin**: the expander's others keep their direction and level, which here
+matters -- the Tab5's `0x44` also switches its USB rail, its charge enable and its power-off
+pulse, and driving those as outputs is not what an app wants.
+
+The first call that needs the I2C bus brings it up (the audio board then shares it, its own
+pins notwithstanding), so the order of those two lines doesn't matter to the bus. **Time**
+does: `esp_hosted` looks for the C6's SDIO link for about five seconds after reset, starting
+before `app_main`, so an app powering the C6 as its first act is what gives it a link at that
+boot -- and only that boot. (A warm reset keeps the expander's latch, so powering the pin once
+by hand makes the next boot look fixed.)
+
+In a custom-board build (`CONFIG_BABYTALK_BOARD_CUSTOM`) there is no such driver and
+`io_pin_set/4` returns `{error, custom_board}`.
+
 ### Other audio chips
 
 For codecs the built-in driver doesn't know (a WM8960, an I2S MEMS mic, a MAX98357A...),
@@ -296,7 +324,8 @@ write a C component that implements `components/atomvm_babytalk/board_audio.h` (
 capture start/read/stop, play, an underrun count) and build with
 `CONFIG_BABYTALK_BOARD_CUSTOM=y`. Everything above that header (engines, NIFs, Erlang) is
 board-independent; `board_audio.c` is a worked example. In a custom build, `audio_config/0,1`
-return `{error, custom_board}` and `audio_presets/0` returns `[]`.
+return `{error, custom_board}`, `audio_presets/0` returns `[]` and `io_pin_set/4` returns
+`{error, custom_board}`.
 
 We have written two custom drivers: one for the T-LoRa Pager (ES8311 and an amp on an
 XL9555, written before run-time configuration: the built-in driver could probably now do it
@@ -467,6 +496,9 @@ receive {babytalk_play, R, done} -> ok end.
 - **`audio_config(Board | Changes) -> ok | {error, term()}`**: use another board.
 - **`audio_preset(Name) -> {ok, Map} | {error, {unknown_board, Name}}`**: a preset's full map.
 - **`audio_presets() -> [Name]`**: the presets compiled in.
+- **`io_pin_set(I2c, Addr, Pin, Level) -> ok | {error, term()}`**: one pin (0..7) of a
+  PI4IOE5V6408 expander, whatever the audio config does with the expander's other pins: for a
+  board part that is neither an amp nor a rail (the Tab5's C6: [above](#a-switched-board-part-on-an-expander-pin-the-tab5s-c6)).
 
 Keys, examples and errors: [Boards and pins](#boards-and-pins).
 

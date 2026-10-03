@@ -3,7 +3,8 @@
 //   ES7210   4-channel mic ADC                            I2C + I2S in
 //   ES8311   mono codec: DAC for the speaker, and/or ADC for a mic
 //   a speaker amp enable (NS4150B and the like) on a GPIO or an IO expander (CH32V003,
-//   PCA9555/TCA9555/XL9555), and optionally an audio power rail switched the same way
+//   PCA9555/TCA9555/XL9555, PI4IOE5V6408), and optionally an audio power rail switched the
+//   same way
 // Presets: the Waveshare ESP32-S3-CAM (ES7210 mics, ES8311 speaker, a CH32V003 switches the
 // rail and the amp; docs/BOARD_WAVESHARE_S3_CAM.md), the Waveshare ESP32-P4-WIFI6 (one
 // ES8311 for mic and speaker, amp on GPIO 53; docs/BOARD_WAVESHARE_P4_WIFI6.md) and the
@@ -89,6 +90,7 @@ static bool ctl_ok(const board_audio_ctl_t *c)
     case BA_CTL_GPIO: return pin_ok(c->pin, true);
     case BA_CTL_CH32V003: return addr_ok(c->addr) && c->pin >= 0 && c->pin < 8;
     case BA_CTL_PCA9555: return addr_ok(c->addr) && c->pin >= 0 && c->pin < 16;
+    case BA_CTL_PI4IOE5V6408: return addr_ok(c->addr) && c->pin >= 0 && c->pin < 8;
     default: return false;
     }
 }
@@ -121,21 +123,47 @@ int board_audio_check(const board_audio_config_t *c)
 // ------------------------------------------------------------------------------ I2C
 static i2c_master_bus_handle_t s_bus;
 static bool s_own_bus;  // we created it (else someone else's, shared: never deleted)
+static int32_t s_hz = 100000;  // the bus's clock, for every device added to it
 static struct {
     uint8_t addr;
     i2c_master_dev_handle_t h;
-} s_dev[4];
+} s_dev[8];
 static int s_ndev;
 static int s_ready;
 static i2s_chan_handle_t s_rx;
 
+// The bus, once. Whoever asks first sets its pins: the audio board at bring-up, or a board's
+// own expander pin (board_audio_pin_set) ahead of it. An I2C port something else already
+// opened (a camera's SCCB, a display, the app) is shared instead.
+static int bus_up(int port, int sda, int scl, int hz)
+{
+    if (s_bus) return 0;
+    if (i2c_master_get_bus_handle(port, &s_bus) == ESP_OK) {
+        s_own_bus = false;
+        return 0;
+    }
+    const i2c_master_bus_config_t bc = {
+        .i2c_port = port, .sda_io_num = sda, .scl_io_num = scl,
+        .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7,
+        .flags = {.enable_internal_pullup = true},
+    };
+    if (i2c_new_master_bus(&bc, &s_bus) != ESP_OK) {
+        s_bus = NULL;
+        return -1;
+    }
+    s_own_bus = true;
+    s_hz = hz;
+    return 0;
+}
+
 static i2c_master_dev_handle_t dev(uint8_t addr)
 {
+    if (!s_bus) return NULL;
     for (int i = 0; i < s_ndev; i++)
         if (s_dev[i].addr == addr) return s_dev[i].h;
-    if (s_ndev == 4) return NULL;
+    if (s_ndev == 8) return NULL;
     i2c_device_config_t dc = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = addr,
-                              .scl_speed_hz = (uint32_t) s_cfg.i2c_hz};
+                              .scl_speed_hz = (uint32_t) s_hz};
     i2c_master_dev_handle_t h;
     if (i2c_master_bus_add_device(s_bus, &dc, &h) != ESP_OK) return NULL;
     s_dev[s_ndev].addr = addr;
@@ -167,6 +195,64 @@ static int ch_slot(uint8_t addr)
     for (int i = 0; i < 2; i++)
         if (s_ch[i].used && s_ch[i].addr == addr) return i;
     return -1;
+}
+
+// The PI4IOE5V6408's config registers (dir 0x03, out 0x05, Hi-Z 0x07) are write-only too, and
+// a dir bit is 1 = output: keep a shadow per expander. A pin is switched to output only when
+// it is first driven -- the expander's other pins belong to whatever else the board wires to
+// it (the M5Stack Tab5's expander at 0x44 also switches the USB rail, the charge enable and
+// the power-off pulse). Any of the eight pins can be driven: an amp, a rail, or a
+// co-processor's (board_audio_pin_set).
+#define PI_MAX 4
+
+static struct {
+    uint8_t addr, dir, out;
+    bool used;
+} s_pi[PI_MAX];
+
+static int pi_slot(uint8_t addr)
+{
+    for (int i = 0; i < PI_MAX; i++)
+        if (s_pi[i].used && s_pi[i].addr == addr) return i;
+    return -1;
+}
+
+// Drive pin 0..7 of the expander at `addr` (the others keep their direction and level)
+static int pi_set(uint8_t addr, int pin, bool level)
+{
+    if (pin < 0 || pin > 7) return -1;
+    i2c_master_dev_handle_t d = dev(addr);
+    if (!d) return -1;
+    int i = pi_slot(addr);
+    if (i < 0) {  // first use: remember it, no pin driven yet
+        for (i = 0; i < PI_MAX && s_pi[i].used; i++) {}
+        if (i == PI_MAX) return -1;
+        if (wr(d, 0x07, 0x00)) return -1;  // none of its pins high-Z
+        s_pi[i].used = true;
+        s_pi[i].addr = addr;
+        s_pi[i].dir = 0x00;
+        s_pi[i].out = 0x00;
+    }
+    const uint8_t bit = (uint8_t) (1 << pin);
+    const uint8_t dir = (uint8_t) (s_pi[i].dir | bit);
+    const uint8_t out = level ? (uint8_t) (s_pi[i].out | bit) : (uint8_t) (s_pi[i].out & ~bit);
+    if (wr(d, 0x03, dir) || wr(d, 0x05, out)) return -1;
+    s_pi[i].dir = dir;
+    s_pi[i].out = out;
+    return 0;
+}
+
+// Drive one pin of a PI4IOE5V6408 without an audio configuration of it: any of the eight pins,
+// on any expander the bus carries. Brings the I2C bus up if the audio board hasn't (the first
+// caller's pins win). 0, or -1 (bus, pins, address or pin) or -2 (nothing answered).
+int board_audio_pin_set(int i2c_port, int sda, int scl, int hz, uint8_t addr, int pin, int level)
+{
+    if (i2c_port < 0 || i2c_port >= SOC_I2C_NUM) return -1;
+    if (!pin_ok(sda, true) || !pin_ok(scl, true)) return -1;
+    if (hz < 10000 || hz > 1000000) return -1;
+    if (!addr_ok(addr) || pin < 0 || pin > 7) return -1;
+    if (bus_up(i2c_port, sda, scl, hz)) return -1;
+    return pi_set(addr, pin, level != 0) ? -2 : 0;
 }
 
 // Set a switch on or off; `setup` the first time (the pin's direction)
@@ -203,6 +289,8 @@ static int ctl_set(const board_audio_ctl_t *c, bool on, bool setup)
         if (setup && (rd(d, 0x06 + port, &v) || wr(d, 0x06 + port, v & ~bit))) return -1;
         return 0;
     }
+    case BA_CTL_PI4IOE5V6408:  // any of its eight pins (pi_set)
+        return pi_set(c->addr, c->pin, level);
     default:
         return 0;
     }
@@ -296,23 +384,7 @@ int board_audio_init(int mic_gain)
     if (s_ready) return 0;
     const board_audio_config_t *c = &s_cfg;
     if (mic_gain < 0) mic_gain = c->mic_gain;
-    if (!s_bus) {
-        // I2C may be up already (a camera's SCCB, a display, the app): share that bus
-        if (i2c_master_get_bus_handle(c->i2c_port, &s_bus) == ESP_OK) {
-            s_own_bus = false;
-        } else {
-            const i2c_master_bus_config_t bc = {
-                .i2c_port = c->i2c_port, .sda_io_num = c->sda, .scl_io_num = c->scl,
-                .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7,
-                .flags = {.enable_internal_pullup = true},
-            };
-            if (i2c_new_master_bus(&bc, &s_bus) != ESP_OK) {
-                s_bus = NULL;
-                return -1;
-            }
-            s_own_bus = true;
-        }
-    }
+    if (bus_up(c->i2c_port, c->sda, c->scl, c->i2c_hz)) return -1;
     // the rail up and the amp off (the amp only once I2S is streaming: no turn-on pop)
     const bool rail = c->power.kind != BA_CTL_NONE;
     if (rail && ctl_set(&c->power, true, true)) return -2;
@@ -345,8 +417,10 @@ void board_audio_configure(const board_audio_config_t *c)
     for (int i = 0; i < s_ndev; i++) i2c_master_bus_rm_device(s_dev[i].h);
     s_ndev = 0;
     memset(s_ch, 0, sizeof(s_ch));
+    memset(s_pi, 0, sizeof(s_pi));
     if (s_bus && s_own_bus) i2c_del_master_bus(s_bus);
     s_bus = NULL;
+    s_hz = 100000;
     s_ready = 0;
     s_cfg = *c;
 }

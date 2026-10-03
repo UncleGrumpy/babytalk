@@ -17,10 +17,12 @@ extern "C" {
 
 enum { BA_CODEC_NONE = 0, BA_CODEC_ES7210 = 1, BA_CODEC_ES8311 = 2 };
 // How a switch (the amp enable, the audio rail) is driven:
-//   GPIO      a pin of the chip                                    pin
-//   CH32V003  Waveshare's CH32V003 IO expander (write-only latch)  addr, pin 0..7
-//   PCA9555   PCA9555 / TCA9555 / XL9555 16-bit IO expander        addr, pin 0..15
-enum { BA_CTL_NONE = 0, BA_CTL_GPIO = 1, BA_CTL_CH32V003 = 2, BA_CTL_PCA9555 = 3 };
+//   GPIO         a pin of the chip                                 pin
+//   CH32V003     Waveshare's CH32V003 IO expander (write-only latch)  addr, pin 0..7
+//   PCA9555      PCA9555 / TCA9555 / XL9555 16-bit IO expander     addr, pin 0..15
+//   PI4IOE5V6408 Diodes PI4IOE5V6408 8-bit IO expander             addr, pin 0..7
+enum { BA_CTL_NONE = 0, BA_CTL_GPIO = 1, BA_CTL_CH32V003 = 2, BA_CTL_PCA9555 = 3,
+       BA_CTL_PI4IOE5V6408 = 4 };
 
 typedef struct {
     int8_t kind;        // BA_CTL_*

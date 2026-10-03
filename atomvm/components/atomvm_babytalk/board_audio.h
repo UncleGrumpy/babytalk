@@ -33,6 +33,13 @@ int board_audio_play(const int16_t *mono, int n, int rate, int volume);
 // DMA underruns during the last play (each one a short gap of silence).
 int board_audio_underruns(void);
 
+// Drive one pin (0..7, level 0/1) of a PI4IOE5V6408 IO expander, independently of the audio
+// configuration -- for a board part that is a switched expander pin, not an amp or a rail.
+// Brings the I2C bus up if the audio board hasn't (the first caller's pins win, and a later
+// board bring-up then shares that bus). 0, else -1 (bus, pins, address or pin) or -2 (nothing
+// answered). Not present with CONFIG_BABYTALK_BOARD_CUSTOM.
+int board_audio_pin_set(int i2c_port, int sda, int scl, int hz, uint8_t addr, int pin, int level);
+
 #ifdef __cplusplus
 }
 #endif
