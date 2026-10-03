@@ -2,6 +2,9 @@
 // (board_audio_config.h): any board made of these parts, on any pins --
 //   ES7210   4-channel mic ADC                            I2C + I2S in
 //   ES8311   mono codec: DAC for the speaker, and/or ADC for a mic
+//   ES8388   stereo codec: its DAC for the speaker, its ADC for a mic; only the DAC is driven
+//            here (the ES8388's ADC and line inputs stay powered down: a board that pairs it
+//            with an ES7210 mic -- the M5Stack Tab5 -- takes its mic from the ES7210)
 //   a speaker amp enable (NS4150B and the like) on a GPIO or an IO expander (CH32V003,
 //   PCA9555/TCA9555/XL9555, PI4IOE5V6408), and optionally an audio power rail switched the
 //   same way
@@ -18,7 +21,9 @@
 // ES7210 and ES8311 register sequences derived from Espressif's es7210 and es8311 drivers
 // (github.com/espressif/esp-bsp, components/es7210, es8311) and esp_codec_dev's es8311 (open +
 // start in BOTH mode), Copyright Espressif Systems (Shanghai) CO LTD, Apache-2.0
-// (licenses/Apache-2.0.txt); rewritten in C for one fixed configuration each.
+// (licenses/Apache-2.0.txt); rewritten in C for one fixed configuration each. The ES8388's DAC
+// sequence follows the ES8388 user guide's "start up playing" order and ESPHome's es8388
+// component (github.com/esphome/esphome), which the register numbers below match.
 #include <sdkconfig.h>
 #ifndef CONFIG_BABYTALK_BOARD_CUSTOM
 
@@ -109,11 +114,11 @@ int board_audio_check(const board_audio_config_t *c)
     if (!pin_ok(c->ws, true)) return 8;
     if (spk ? !pin_ok(c->dout, true) : !pin_opt(c->dout, true)) return 9;
     if (mic ? !pin_ok(c->din, false) : !pin_opt(c->din, false)) return 10;
-    if (c->mic < BA_CODEC_NONE || c->mic > BA_CODEC_ES8311) return 11;
+    if (c->mic < BA_CODEC_NONE || c->mic > BA_CODEC_ES8311) return 11;  // the ES8388's ADC is not set up
     if (mic && !addr_ok(c->mic_addr)) return 12;
     if (c->mic_gain < -1 || c->mic_gain > (c->mic == BA_CODEC_ES7210 ? 14 : 7)) return 13;
     if (c->mic_slot != 0 && c->mic_slot != 1) return 14;
-    if (c->spk != BA_CODEC_NONE && c->spk != BA_CODEC_ES8311) return 15;
+    if (c->spk != BA_CODEC_NONE && c->spk != BA_CODEC_ES8311 && c->spk != BA_CODEC_ES8388) return 15;
     if (spk && !addr_ok(c->spk_addr)) return 16;
     if (!ctl_ok(&c->amp)) return 17;
     if (!ctl_ok(&c->power)) return 21;
@@ -376,6 +381,50 @@ static int es8311_both_init(i2c_master_dev_handle_t d, int gain)
     return 0;
 }
 
+// ES8388 as the speaker's DAC only: stereo, though a board wires one channel to its amp; 16-bit
+// I2S slave, MCLK = 256 x Fs. The ES8388's ADC and line inputs are left powered down (the board
+// this supports, the M5Stack Tab5, has an ES7210 for its microphones). Register order from the
+// ES8388 user guide's "start up playing" sequence, as ESPHome's es8388 component does it.
+static int es8388_dac_init(i2c_master_dev_handle_t d)
+{
+    uint8_t v;
+    if (rd(d, 0x19, &v) || wr(d, 0x19, v | 0x04)) return -1;  // DAC Control 3: mute while setting up
+    static const uint8_t seq[][2] = {
+        {0x08, 0x00},                // Chip Control: 0 = I2S slave (MCLK in, the P4 is master)
+        {0x01, 0x50},                // Chip Control 2: power up the analog block and i bias
+        {0x02, 0x00},                // Chip power management: normal, power up all
+        {0x00, 0x12},                // Chip Control 1: internal reference up, play mode
+        {0x03, 0xFF},                // ADC power: the ADC and line inputs stay off
+        {0x17, 0x18},                // DAC Control 1: I2S, 16-bit
+        {0x18, 0x02},                // DAC Control 2: MCLK / LRCK = 256
+        {0x26, 0x00},                // DAC Control 16: LIN1 / RIN1 to the mixers
+        {0x27, 0x90},                // DAC Control 17: left DAC -> left mixer, 0 dB
+        {0x2A, 0x90},                // DAC Control 20: right DAC -> right mixer, 0 dB
+        {0x2B, 0x80},                // DAC Control 21: the ADC and DAC share the LRCK
+        {0x2D, 0x00},                // DAC Control 23: VROI, 1.5k to the analog outputs
+        {0x1A, 0x00}, {0x1B, 0x00},  // DAC digital volume L / R: 0 dB
+        {0x2E, 0x1E}, {0x2F, 0x1E},  // LOUT1 / ROUT1 volume: 0 dB
+        {0x30, 0x1E}, {0x31, 0x1E},  // LOUT2 / ROUT2 volume: 0 dB (the other output pair)
+    };
+    for (size_t i = 0; i < sizeof(seq) / 2; i++)
+        if (wr(d, seq[i][0], seq[i][1])) return -1;
+    if (wr(d, 0x04, 0x3C)) return -1;  // DAC power: both DACs up, LOUT1/ROUT1 + LOUT2/ROUT2 on
+    if (wr(d, 0x02, 0xF0)) return -1;  // start the state machine
+    vTaskDelay(pdMS_TO_TICKS(1));
+    if (wr(d, 0x02, 0x00)) return -1;
+    if (rd(d, 0x19, &v) || wr(d, 0x19, v & (uint8_t) ~0x04)) return -1;  // unmute (keep the rest)
+    return 0;
+}
+
+// The ES8388's analog output volume register (0x00 = -45 dB, 0x1E = 0 dB, 0x21 = +4.5 dB, in
+// 1.5 dB steps) for BabyTalk's 0..100, where 75 keeps its "0 dB" (as the ES8311's DAC at 75):
+// one ES8388 step every three units.
+static uint8_t es8388_out_volume(int volume)
+{
+    int v = 0x1E + (volume - 75) / 3;
+    return (uint8_t) (v < 0 ? 0 : (v > 0x21 ? 0x21 : v));
+}
+
 // ------------------------------------------------------------------------------ bring-up
 // Negative on failure: -1 the I2C bus, -2 the power rail or amp switch, -3 the mic's codec,
 // -4 the speaker's codec
@@ -399,6 +448,7 @@ int board_audio_init(int mic_gain)
         spk_done = c->spk == BA_CODEC_ES8311 && c->spk_addr == c->mic_addr;
     }
     if (c->spk == BA_CODEC_ES8311 && !spk_done && es8311_dac_init(dev(c->spk_addr))) return -4;
+    if (c->spk == BA_CODEC_ES8388 && es8388_dac_init(dev(c->spk_addr))) return -4;
     s_ready = 1;
     ESP_LOGI(TAG, "audio up: I2C %d (SDA %d, SCL %d), I2S %d (MCLK %d, BCLK %d, WS %d, out %d, in %d)",
              c->i2c_port, c->sda, c->scl, c->i2s_port, c->mclk, c->bclk, c->ws, c->dout, c->din);
@@ -517,7 +567,13 @@ int board_audio_play(const int16_t *mono, int n, int rate, int volume)
     if (!s_ready || s_rx) return -1;  // the port is capturing
     if (s_cfg.spk == BA_CODEC_NONE) return -8;
     volume = volume < 0 ? 0 : (volume > 100 ? 100 : volume);
-    if (wr(dev(s_cfg.spk_addr), 0x32, volume ? (uint8_t) (volume * 256 / 100 - 1) : 0)) return -2;
+    i2c_master_dev_handle_t spk = dev(s_cfg.spk_addr);
+    if (s_cfg.spk == BA_CODEC_ES8388) {
+        const uint8_t v = es8388_out_volume(volume);  // the analog output volume, both pairs
+        if (wr(spk, 0x2E, v) || wr(spk, 0x2F, v) || wr(spk, 0x30, v) || wr(spk, 0x31, v)) return -2;
+    } else if (wr(spk, 0x32, volume ? (uint8_t) (volume * 256 / 100 - 1) : 0)) {
+        return -2;
+    }
     i2s_chan_handle_t tx;
     i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(s_cfg.i2s_port, I2S_ROLE_MASTER);
     cc.dma_frame_num = 480;

@@ -46,8 +46,8 @@ choice BABYTALK_BOARD
         The board the built-in audio driver (board_audio.c) assumes until the app says
         otherwise. Pins, codecs and the amp switch are run-time settings:
         babytalk:audio_config/1 picks a preset or overrides any field, so one firmware per
-        chip serves every board built from BabyTalk's supported parts (ES7210, ES8311; amp
-        and rail on a GPIO or an IO expander). No pin is touched before the first
+        chip serves every board built from BabyTalk's supported parts (ES7210, ES8311, ES8388;
+        amp and rail on a GPIO or an IO expander). No pin is touched before the first
         listen/play or audio_config call. See atomvm/README.md, "Your board's pins".
 
 config BABYTALK_BOARD_WAVESHARE_S3_CAM

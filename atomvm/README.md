@@ -197,6 +197,7 @@ from your app. A different board needs no rebuild, as long as it uses these part
 |---|---|---|---|
 | **Everest ES7210** | 4-channel microphone ADC (one channel used) | I2C (setup) + I2S in | `mic => #{codec => es7210}` |
 | **Everest ES8311** | mono codec: its DAC for the speaker, and/or its ADC for a mic | I2C + I2S | `speaker => #{codec => es8311}`, `mic => #{codec => es8311}` |
+| **Everest ES8388** | stereo codec: its DAC for the speaker (the M5Stack Tab5's playback chip); its ADC is not set up | I2C + I2S | `speaker => #{codec => es8388}` |
 | speaker amp enable (NS4150B and the like) | on only while playing (no hiss, no pop) | a GPIO, or an I2C IO expander pin | `amp => ...` |
 | audio power rail (optional) | on from bring-up | the same | `power => ...` |
 | IO expanders | **WCH CH32V003** as Waveshare programs it (8 pins, write-only latch: we keep a shadow), **PCA9555 / TCA9555 / XL9555** (16 pins), **Diodes PI4IOE5V6408** (8 pins, write-only config: we keep a shadow) | I2C | `{ch32v003, Addr, Pin}`, `{pca9555, Addr, Pin}`, `{pi4ioe5v6408, Addr, Pin}` |
@@ -249,12 +250,14 @@ preset): `#{i2s => #{din => 21}}` keeps the other I2S pins. The full form, with 
 | `mic.codec` | `es7210`, `es8311` or `none` (also: `mic => none`) |
 | `mic.gain` | `default`, or the codec's own step: ES7210 0..14 (PGA), ES8311 0..7 (6 dB each). Defaults: ES7210 14, ES8311 4 |
 | `mic.slot` | `left` or `right`: the I2S slot the mic is on |
-| `speaker.codec` | `es8311` or `none` (also: `speaker => none`) |
+| `speaker.codec` | `es8311`, `es8388` or `none` (also: `speaker => none`) |
 | `address` | the chip's 7-bit I2C address |
 | `amp`, `power` | `none` · `{gpio, Pin}` · `{ch32v003, Addr, Pin}` · `{pca9555, Addr, Pin}` · `{pi4ioe5v6408, Addr, Pin}`, each optionally with `active_low` as a last element: `{gpio, 46, active_low}` |
 
 With one ES8311 as both mic and speaker (same address in both), it's set up for both
-directions at once; an ES8311 as speaker only gets the DAC-only setup.
+directions at once; an ES8311 as speaker only gets the DAC-only setup. An ES8388 as the
+speaker gets the DAC-only setup too: its ADC and line inputs stay powered down (a board that
+pairs it with an ES7210 mic, like the M5Stack Tab5, takes the mic from the ES7210).
 
 `audio_config/1` releases the old pins, brings the new board up right away and waits for it,
 so a wrong pin or address shows immediately:
@@ -820,5 +823,5 @@ runs, MMRT keeps both cores busy (its helper task on core 0), so Erlang code and
 more slowly for those ~0.2 s per second of audio (`CONFIG_BABYTALK_YIELD` trades speech speed
 for a responsive VM). The mic and the speaker take turns (one
 I2S port), so the board can't hear you while it talks. The end of a message is found by
-loudness, so a noisy room may run to the 6 s cap. The built-in audio driver knows two codecs
-(ES7210, ES8311); other chips need a C driver (`CONFIG_BABYTALK_BOARD_CUSTOM`).
+loudness, so a noisy room may run to the 6 s cap. The built-in audio driver knows three codecs
+(ES7210, ES8311, ES8388); other chips need a C driver (`CONFIG_BABYTALK_BOARD_CUSTOM`).

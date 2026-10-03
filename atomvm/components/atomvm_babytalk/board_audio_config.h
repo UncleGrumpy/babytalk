@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-enum { BA_CODEC_NONE = 0, BA_CODEC_ES7210 = 1, BA_CODEC_ES8311 = 2 };
+enum { BA_CODEC_NONE = 0, BA_CODEC_ES7210 = 1, BA_CODEC_ES8311 = 2, BA_CODEC_ES8388 = 3 };
 // How a switch (the amp enable, the audio rail) is driven:
 //   GPIO         a pin of the chip                                 pin
 //   CH32V003     Waveshare's CH32V003 IO expander (write-only latch)  addr, pin 0..7
@@ -36,7 +36,7 @@ typedef struct {
     int32_t i2c_hz;
     int8_t i2s_port, mclk, bclk, ws, dout, din;  // -1: unused (dout without a speaker, din without a mic)
     int8_t mic, mic_addr, mic_gain, mic_slot;    // BA_CODEC_*; gain: the codec's own step, -1 = its default; slot 0 left, 1 right
-    int8_t spk, spk_addr;                        // BA_CODEC_ES8311 or NONE
+    int8_t spk, spk_addr;                        // BA_CODEC_ES8311 or BA_CODEC_ES8388, or NONE
     board_audio_ctl_t amp, power;                // amp: on only while playing; power: on from init
 } board_audio_config_t;
 

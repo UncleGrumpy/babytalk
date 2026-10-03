@@ -1,5 +1,6 @@
 // The board's microphone and speaker, for BabyTalk's AtomVM NIFs: the only hardware-specific
-// part of BabyTalk. board_audio.c implements it for boards built from ES7210/ES8311 codecs,
+// part of BabyTalk. board_audio.c implements it for boards built from ES7210/ES8311/ES8388
+// codecs,
 // with the pins, I2C addresses and amp/rail switches chosen at run time
 // (board_audio_config.h, babytalk:audio_config/1). A board with other audio chips implements
 // these functions in its own component and selects CONFIG_BABYTALK_BOARD_CUSTOM (see Kconfig).

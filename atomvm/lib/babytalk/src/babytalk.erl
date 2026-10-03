@@ -179,7 +179,7 @@ reserve_at_boot(On) when is_boolean(On) ->
 %% The microphone and speaker driver is configured at run time: one firmware per chip serves
 %% any board built from the parts it knows --
 %%   mic:      ES7210 (4-channel ADC) or ES8311 (its ADC), or none
-%%   speaker:  ES8311 (its DAC), or none
+%%   speaker:  ES8311 (its DAC) or ES8388 (its DAC), or none
 %%   amp, power: a switch for the speaker amp (on only while playing) and for the audio
 %%             power rail (on from bring-up): a GPIO, or a pin of an I2C IO expander --
 %%             ch32v003 (Waveshare's, pins 0..7), pca9555 (also TCA9555, XL9555; pins 0..15)
@@ -347,6 +347,7 @@ enc(pin, V, _) when is_integer(V), V >= 0 -> V;
 enc(codec, none, _) -> 0;
 enc(codec, es7210, _) -> 1;
 enc(codec, es8311, _) -> 2;
+enc(codec, es8388, _) -> 3;
 enc(gain, default, _) -> -1;
 enc(gain, V, _) when is_integer(V), V >= 0 -> V;
 enc(slot, left, _) -> 0;
@@ -378,6 +379,7 @@ dec_pin(P) -> P.
 
 dec_codec(1) -> es7210;
 dec_codec(2) -> es8311;
+dec_codec(3) -> es8388;
 dec_codec(_) -> none.
 
 switch_from([0, _, _, _]) -> none;
