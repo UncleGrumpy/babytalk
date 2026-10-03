@@ -214,6 +214,7 @@ the datasheet but hasn't been used on a board yet.
 | `waveshare_s3_cam` | Waveshare ESP32-S3-CAM ([notes](../docs/BOARD_WAVESHARE_S3_CAM.md)) | ES7210 at `0x40` | ES8311 at `0x18` | CH32V003 at `0x24`: amp pin 4, rail pin 6 | 8, 7 | 10, 11, 12, 14, 13 |
 | `waveshare_p4_wifi6` | Waveshare ESP32-P4-WIFI6 ([notes](../docs/BOARD_WAVESHARE_P4_WIFI6.md)) | ES8311 at `0x18` (its ADC) | the same ES8311 | GPIO 53 / none | 7, 8 | 13, 12, 10, 9, 11 |
 | `lilygo_t_lora_pager` | LilyGO T-LoRa Pager (quad PSRAM: build `esp32s3_quad`) | ES8311 at `0x18` (its ADC) | the same ES8311 | XL9555 at `0x20`: amp pin 1 / none | 3, 2 | 10, 11, 18, 45, 17 |
+| `m5stack_tab5` | M5Stack Tab5 | ES7210 at `0x40` | ES8388 at `0x10` | PI4IOE5V6408 at `0x43`: amp pin 1 | 31, 32 | 30, 27, 29, 26, 28 |
 
 The firmware starts out assuming its default board (Kconfig `BABYTALK_BOARD`: the S3-CAM on
 an S3, the P4-WIFI6 on a P4), but **touches no pin** until the first `listen`, `play` or
@@ -227,7 +228,7 @@ ok = babytalk:audio_config(#{board => waveshare_p4_wifi6, amp => {gpio, 46}}).  
 ok = babytalk:audio_config(#{i2s => #{din => 21}}).                       % change the board in use
 {ok, Cfg} = babytalk:audio_config().                                      % what's in force
 {ok, Cfg} = babytalk:audio_preset(waveshare_s3_cam).                      % a starting point
-[waveshare_s3_cam, waveshare_p4_wifi6] = babytalk:audio_presets().
+[waveshare_s3_cam, waveshare_p4_wifi6, lilygo_t_lora_pager, m5stack_tab5] = babytalk:audio_presets().
 ```
 
 A change map is merged **section by section** into the board in use (or into `board`'s
@@ -775,6 +776,7 @@ build of BabyTalk made any other way needs them too.
 | `apps/speed_bench` | transcription and synthesis timings |
 | `apps/mmrt_test` | MMRT test vectors from `gen_vectors.py` + benchmarks |
 | `apps/tcp_upload_repro` | a minimal repro of AtomVM's `gen_tcp` drops on long uploads |
+| `apps/tab5_wifi_log` | join WiFi and serve the log on port 8080 (SSE) — the M5Stack Tab5's C6 rail, the join, and `listen_demo`'s log lines, over HTTP |
 
 Apps that use WiFi need `gen_wifi_creds.sh <app dir>`, which writes a git-ignored
 `wifi_creds.erl`.

@@ -10,9 +10,10 @@
 //   same way
 // Presets: the Waveshare ESP32-S3-CAM (ES7210 mics, ES8311 speaker, a CH32V003 switches the
 // rail and the amp; docs/BOARD_WAVESHARE_S3_CAM.md), the Waveshare ESP32-P4-WIFI6 (one
-// ES8311 for mic and speaker, amp on GPIO 53; docs/BOARD_WAVESHARE_P4_WIFI6.md) and the
+// ES8311 for mic and speaker, amp on GPIO 53; docs/BOARD_WAVESHARE_P4_WIFI6.md), the
 // LilyGO T-LoRa Pager (one ES8311 for mic and speaker, NS4150B amp on pin 1 of the XL9555
-// that also switches the board's other rails; pins from LilyGO's pins_arduino.h).
+// that also switches the board's other rails; pins from LilyGO's pins_arduino.h) and the
+// M5Stack Tab5 (ES7210 mics, ES8388 speaker, amp on a PI4IOE5V6408 pin).
 //
 // The ESP is always the I2S master at MCLK = 256 x Fs, so the codecs' dividers are one fixed
 // row of Espressif's tables for every rate; the mic and the speaker take turns on one I2S port.
@@ -65,10 +66,21 @@
     .spk = BA_CODEC_ES8311, .spk_addr = 0x18,                                       \
     .amp = {BA_CTL_PCA9555, 0x20, 1, 0}, .power = {BA_CTL_NONE, 0, -1, 0}}
 
+// The M5Stack Tab5 (ESP32-P4 + an on-board C6 for WiFi): an ES7210 for the microphone array and
+// an ES8388 for playback, with the amp on a PI4IOE5V6408 pin. (The C6's SDIO pins are a
+// separate, build-time setting: the esp32p4_*_tab5 targets, sdkconfig.babytalk.tab5.)
+#define M5STACK_TAB5 {                                                              \
+    .i2c_port = 0, .sda = 31, .scl = 32, .i2c_hz = 100000,                          \
+    .i2s_port = 0, .mclk = 30, .bclk = 27, .ws = 29, .dout = 26, .din = 28,         \
+    .mic = BA_CODEC_ES7210, .mic_addr = 0x40, .mic_gain = -1, .mic_slot = 0,        \
+    .spk = BA_CODEC_ES8388, .spk_addr = 0x10,                                       \
+    .amp = {BA_CTL_PI4IOE5V6408, 0x43, 1, 0}, .power = {BA_CTL_NONE, 0, -1, 0}}
+
 const board_audio_preset_t board_audio_presets[] = {
     {"\x10" "waveshare_s3_cam", WAVESHARE_S3_CAM},
     {"\x12" "waveshare_p4_wifi6", WAVESHARE_P4_WIFI6},
     {"\x13" "lilygo_t_lora_pager", LILYGO_T_LORA_PAGER},
+    {"\x0c" "m5stack_tab5", M5STACK_TAB5},
 };
 const int board_audio_n_presets = sizeof(board_audio_presets) / sizeof(board_audio_presets[0]);
 
@@ -77,6 +89,8 @@ const int board_audio_n_presets = sizeof(board_audio_presets) / sizeof(board_aud
 static board_audio_config_t s_cfg = WAVESHARE_P4_WIFI6;
 #elif defined(CONFIG_BABYTALK_BOARD_LILYGO_T_LORA_PAGER)
 static board_audio_config_t s_cfg = LILYGO_T_LORA_PAGER;
+#elif defined(CONFIG_BABYTALK_BOARD_M5STACK_TAB5)
+static board_audio_config_t s_cfg = M5STACK_TAB5;
 #else
 static board_audio_config_t s_cfg = WAVESHARE_S3_CAM;
 #endif
