@@ -61,6 +61,10 @@ config BABYTALK_BOARD_LILYGO_T_LORA_PAGER
     bool "LilyGO T-LoRa Pager (ES8311 mic + speaker, NS4150B amp on an XL9555)"
     depends on IDF_TARGET_ESP32S3
 
+config BABYTALK_BOARD_M5STACK_TAB5
+    bool "M5Stack Tab5 (ES7210 mics, ES8388 speaker, NS4150B amp on a PI4IOE5V6408)"
+    depends on IDF_TARGET_ESP32P4
+
 config BABYTALK_BOARD_CUSTOM
     bool "Custom: another component implements board_audio.h"
     help

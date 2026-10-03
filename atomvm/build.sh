@@ -9,6 +9,9 @@
 #   esp32p4_c6       ESP32-P4 v3.0 or later + an ESP32-C6 for WiFi
 #   esp32p4_pre      ESP32-P4 before v3.0, no WiFi
 #   esp32p4          ESP32-P4 v3.0 or later, no WiFi
+#   esp32p4_pre_c6_tab5, esp32p4_c6_tab5
+#                    the same two P4 + C6 chips on an M5Stack Tab5: its on-board C6 is wired
+#                    to different SDIO pins, so it needs sdkconfig.babytalk.tab5 on top
 # (the P4 names are AtomVM's own presets; esptool and the boot log show the chip's revision)
 #
 # -> $OUT/atomvm-babytalk.img (flash at 0x0: bootloader, partition table, AtomVM, boot.avm).
@@ -34,8 +37,8 @@ VOICE="${SANOTTS_VOICE:-nano}"
 case "$TARGET" in
     esp32s3) CHIP=esp32s3; SUFFIX="" ;;
     esp32s3_quad) CHIP=esp32s3; SUFFIX="-$TARGET" ;;
-    esp32p4|esp32p4_pre|esp32p4_c6|esp32p4_pre_c6) CHIP=esp32p4; SUFFIX="-$TARGET" ;;
-    *) echo "unknown target '$TARGET': esp32s3, esp32s3_quad, esp32p4_pre_c6, esp32p4_c6, esp32p4_pre or esp32p4" >&2; exit 2 ;;
+    esp32p4|esp32p4_pre|esp32p4_c6|esp32p4_pre_c6|esp32p4_pre_c6_tab5|esp32p4_c6_tab5) CHIP=esp32p4; SUFFIX="-$TARGET" ;;
+    *) echo "unknown target '$TARGET': esp32s3, esp32s3_quad, esp32p4_pre_c6, esp32p4_c6, esp32p4_pre, esp32p4, esp32p4_pre_c6_tab5 or esp32p4_c6_tab5" >&2; exit 2 ;;
 esac
 case "$VOICE" in
     nano) ;;
@@ -52,6 +55,11 @@ if [ "$VOICE" != nano ] && [ -z "$(part_off voice)" ]; then
     exit 2
 fi
 AVM="${AVM_DIR:-$HOME/build/atomvm-$TAG$SUFFIX}"
+# AtomVM's own variant preset (and its release image) is per chip, not per board: a board
+# target only adds settings on top. The M5Stack Tab5 is an ESP32-P4 with an on-board C6, so it
+# takes the same variant as the other P4 + C6 targets.
+VARIANT="$TARGET"
+case "$TARGET" in *_tab5) VARIANT="${TARGET%_tab5}" ;; esac
 OUT="${OUT_DIR:-$HOME/build/atomvm-out$SUFFIX}"
 export IDF_PATH="${IDF_PATH:-$HOME/build/lvgl_micropython/lib/esp-idf}"
 . "$IDF_PATH/export.sh" >/dev/null
@@ -75,8 +83,8 @@ if [ "$CHIP" = esp32p4 ]; then
     # AtomVM's own recipe (its CI): the variant's preset, and for a C6 co-processor
     # esp_wifi_remote (bringing esp_hosted), so AtomVM's network driver reaches the C6's WiFi
     # through the usual esp_wifi API
-    cp "$E/sdkconfig.defaults.$TARGET" "$E/sdkconfig.defaults.babytalk-variant"
-    case "$TARGET" in
+    cp "$E/sdkconfig.defaults.$VARIANT" "$E/sdkconfig.defaults.babytalk-variant"
+    case "$VARIANT" in
         *_c6) cp "$E/components/avm_builtins/idf_component.yml.esp32p4_wifi_remote" "$E/components/avm_builtins/idf_component.yml" ;;
     esac
 fi
@@ -88,6 +96,8 @@ DEFAULTS="sdkconfig.defaults"
 [ "$CHIP" = esp32p4 ] && DEFAULTS="$DEFAULTS;sdkconfig.defaults.babytalk-variant"
 DEFAULTS="$DEFAULTS;$HERE/sdkconfig.babytalk"
 [ "$TARGET" = esp32s3_quad ] && DEFAULTS="$DEFAULTS;$HERE/sdkconfig.babytalk-psram-quad"
+# a board target adds its settings after the chip's
+case "$TARGET" in *_tab5) DEFAULTS="$DEFAULTS;$HERE/sdkconfig.babytalk.tab5" ;; esac
 cd "$E"
 stamp="$(echo "$TARGET" | cat - "$HERE"/sdkconfig.babytalk* | sha1sum | cut -c1-12)"
 if [ ! -f sdkconfig ] || [ "$(cat .babytalk-overlay 2>/dev/null)" != "$stamp" ]; then
@@ -114,7 +124,7 @@ idf.py -D SDKCONFIG_DEFAULTS="$DEFAULTS" -D AVM_PARTITION_TABLE_FILENAME="$TABLE
 
 # boot.avm: the Erlang + Elixir standard libraries, cut from AtomVM's release image for this
 # target (where that image's own partition table puts boot.avm)
-REL_TARGET="${TARGET%_quad}"                       # (no quad-PSRAM release: the libraries are the same)
+REL_TARGET="${VARIANT%_quad}"                      # (no quad-PSRAM release: the libraries are the same)
 REL="$OUT/AtomVM-$REL_TARGET-elixir-$TAG.img"
 [ -s "$REL" ] || curl -fsL -o "$REL" \
     "https://github.com/atomvm/AtomVM/releases/download/$TAG/AtomVM-$REL_TARGET-elixir-$TAG.img"
