@@ -101,7 +101,7 @@ page. Licensing is now worked out: images with speech to text only are MIT/Apach
 (attribution); images with text to speech should ship as GPL-3.0 with source until sanoTTS
 clarifies three files ([components/sanotts/LICENSES.md](../components/sanotts/LICENSES.md)).
 One image per chip (ESP32-S3, ESP32-P4) serves every board built from the supported audio
-chips (ES7210, ES8311): the app sets the pins at run time (`babytalk:audio_config/1`). Boards
+chips (ES7210, ES8311, ES8388): the app sets the pins at run time (`babytalk:audio_config/1`). Boards
 with other audio chips need a driver first.
 
 ## 8. Other languages, and more boards
