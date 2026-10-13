@@ -17,6 +17,9 @@ void mmrt_dwconv_port(const int8_t *x, int T_in, int C, const int8_t *w, int K, 
                       int shift, int relu, int8_t *y, int T_out);
 void mmrt_conv1x1_port(const int8_t *x, int T_in, int C, const int8_t *w, const int32_t *bias, int N,
                        int stride, int shift, int relu, int8_t *y, int T_out);
+// as mmrt_dwconv2d_ref; C a multiple of 16
+void mmrt_dwconv2d_port(const int8_t *x, int H, int W, int C, const int8_t *w, int K, int stride, int pad,
+                        int shift, int relu, int8_t *y, int Ho, int Wo);
 
 // One CB4 weight group (mmrt.h: 256-byte table, then C x 8 index bytes) -> [C][16] int8. With
 // scratch (MMRT_CB4_SCRATCH bytes, 2-byte aligned) and C >= 1024 it builds per-lane-pair tables
@@ -40,6 +43,10 @@ int32_t mmrt_dot_s8(const int8_t *a, const int8_t *b, int n16);
 // or it failed its check) -- then use the portable kernel
 int mmrt_dwconv_p4(const int8_t *x, int T_in, int C, const int8_t *w, int K, int stride, int pad, int shift,
                    int relu, int8_t *y, int T_out);
+// the 2-D depthwise conv on the P4's vector unit (checks itself first, as mmrt_dwconv_p4): 0, or -1
+// if it can't take this call -- then use the portable kernel
+int mmrt_dwconv2d_p4(const int8_t *x, int H, int W, int C, const int8_t *w, int K, int stride, int pad,
+                     int shift, int relu, int8_t *y, int Ho, int Wo);
 // 1 if the vector dot product matches C's on a range of lengths (checked once, before use)
 int mmrt_dot_p4_check(void);
 // 1 if the P4's 1x1 group kernel matches the same arithmetic in C (checked once, before use)

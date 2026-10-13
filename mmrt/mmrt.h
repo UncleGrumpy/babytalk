@@ -1,6 +1,7 @@
 // mmrt: a small int8 inference runtime for Citrinet-style CTC speech models on the
 // ESP32-S3. The model is a straight-line list of ops over time-major int8 tensors,
-// exported from ESP-PPQ's deployed graph by export/mmrt_export.py.
+// exported from ESP-PPQ's deployed graph by export/mmrt_export.py. An image is the same
+// thing with its rows of pixels end to end: [H*W][C], the 2-D ops given the width W.
 //
 // File layout (little endian, every section 16-byte aligned):
 //   mmrt_header_t
@@ -19,7 +20,7 @@ extern "C" {
 #endif
 
 #define MMRT_MAGIC 0x54524d4du  // "MMRT"
-#define MMRT_VERSION 2  // 2: per-op weight format (wfmt); version-1 files (all int8) still load
+#define MMRT_VERSION 3  // 3: 2-D ops (DWCONV2D, IM2COL, mmrt_op_t.W); 2: per-op weight format (wfmt); older files still load
 
 typedef enum {
     MMRT_DWCONV = 1,   // depthwise conv, weights [C/16][K][16], no bias
@@ -28,6 +29,12 @@ typedef enum {
     MMRT_LUT = 4,      // y = lut[x + 128]
     MMRT_MUL = 5,      // y[t][c] = x[t][c] * s[c]   (in1 is the [1][C] vector)
     MMRT_ADD = 6,      // y = a + b
+    // 2-D ops on images [H*W][C], W = mmrt_op_t.W (the input's width), H = frames / W.
+    // Output Ho = (H + 2*pad - K) / stride + 1, Wo likewise; frames Ho*Wo.
+    MMRT_DWCONV2D = 7, // depthwise K x K conv, weights [C/16][K*K][16] (tap ky*K + kx), no bias
+    MMRT_IM2COL = 8,   // the K x K patches as rows: y[o][(ky*K + kx)*C + c] = x(...)[c], zeros
+                       // past the patch (y has channels(out) >= K*K*C, a multiple of 16):
+                       // then a 1x1 conv is the full K x K conv (a first layer on 3 channels)
 } mmrt_kind_t;
 
 // 1x1-conv weight formats (mmrt_op_t.wfmt). Both describe [N/16][C][16] int8 weights:
@@ -66,7 +73,7 @@ typedef struct {
     uint8_t wfmt;             // mmrt_wfmt_t (1x1 conv weights)
     uint8_t pad_[2];
     uint16_t in0, in1, out;   // tensor ids (in1 = 0xffff if unused)
-    uint16_t pad2_;
+    uint16_t W;               // 2-D ops: the input's width (0 in older files)
     uint32_t w_off, b_off;    // blob offsets (0xffffffff if none); LUT uses w_off
 } mmrt_op_t;
 

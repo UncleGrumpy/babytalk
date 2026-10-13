@@ -386,3 +386,66 @@ mmrt_p4_tail_row:
     bnez    t3, .Ltail_group
     ret
     .size   mmrt_p4_tail_row, . - mmrt_p4_tail_row
+
+// void mmrt_p4_dw2d_px(int8_t *y, const int8_t *x, const int8_t *w, const mmrt_p4_dw2d_t *a)
+//
+// One output pixel of a 2-D depthwise conv, all channel groups: mmrt_p4_dw_row with an outer
+// loop over the kernel's rows (the S3's mmrt_s3_dw2d_px). The C driver clips the taps:
+//   x: input pixel of the first valid tap (+ g*16 per group): pixels C bytes apart, rows xrow
+//   w: [groups][K*K][16] weights at the first valid tap of group 0: kernel rows wrow apart
+//   a: +0 nky, +4 nkx (>= 1), +8 C, +12 xrow, +16 wrow, +20 groups, +24 KK16, +28 shift (0..13),
+//      +32 relu, then at +48 and +64 the rounding term's factors (as mmrt_p4_dw_row)
+    .text
+    .align  4
+    .global mmrt_p4_dw2d_px
+    .type   mmrt_p4_dw2d_px, @function
+mmrt_p4_dw2d_px:
+    lw      a4, 28(a3)              // shift
+    lw      a5, 8(a3)               // C
+    lw      a6, 20(a3)              // groups
+    lw      t1, 32(a3)              // relu
+    addi    t6, a3, 48
+    esp.vld.128.ip  q5, t6, 16      // rnd_a
+    esp.vld.128.ip  q4, t6, 16      // rnd_b (lane 0)
+    esp.zero.q      q6
+.Ldw2_group:
+    mv      t3, a1                  // x: this group's first tap row
+    mv      t2, a2                  // w: this group's first tap row
+    lw      a7, 0(a3)               // nky
+    esp.zero.qacc
+.Ldw2_row:
+    mv      t4, t3
+    mv      t5, t2
+    esp.vld.128.xp  q0, t4, a5      // x tap 0 of this row
+    esp.vld.128.ip  q1, t5, 16      // w tap 0 of this row
+    lw      t0, 4(a3)               // nkx
+    addi    t0, t0, -1
+    beqz    t0, .Ldw2_last
+.Ldw2_tap:
+    esp.vmulas.s8.qacc.ld.ip q1, t5, 16, q0, q1     // acc += x * w; next w
+    esp.vld.128.xp  q0, t4, a5                      // next x
+    addi    t0, t0, -1
+    bnez    t0, .Ldw2_tap
+.Ldw2_last:
+    esp.vmulas.s8.qacc q0, q1
+    lw      t0, 12(a3)              // xrow
+    add     t3, t3, t0
+    lw      t0, 16(a3)              // wrow
+    add     t2, t2, t0
+    addi    a7, a7, -1
+    bnez    a7, .Ldw2_row
+    beqz    a4, .Ldw2_shifted
+    esp.vsmulas.s8.qacc q5, q4, 0   // + 2^(shift - 1)
+.Ldw2_shifted:
+    esp.srcmb.s8.qacc q3, a4, 1     // q3 = sat8(QACC >> shift)
+    beqz    t1, .Ldw2_store
+    esp.vmax.s8     q3, q3, q6
+.Ldw2_store:
+    esp.vst.128.ip  q3, a0, 16
+    addi    a1, a1, 16              // next channel group
+    lw      t0, 24(a3)              // KK16
+    add     a2, a2, t0
+    addi    a6, a6, -1
+    bnez    a6, .Ldw2_group
+    ret
+    .size   mmrt_p4_dw2d_px, . - mmrt_p4_dw2d_px
