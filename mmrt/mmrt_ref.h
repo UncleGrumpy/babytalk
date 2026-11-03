@@ -22,6 +22,17 @@ extern int32_t mmrt_ref_max_acc;
 void mmrt_dwconv_ref(const int8_t *x, int T_in, int C, const int8_t *w, int K, int stride, int pad,
                      int shift, int relu, int8_t *y, int T_out);
 
+// The 2-D depthwise conv on an image [H*W][C] (pixel (iy, ix) at row iy*W + ix):
+// y[oy][ox][c] = sat8(rnd(sum_{ky,kx} x[oy*stride + ky - pad][ox*stride + kx - pad][c] * w[c][ky*K + kx]
+// >> shift)), zero padding; weights [C/16][K*K][16].
+void mmrt_dwconv2d_ref(const int8_t *x, int H, int W, int C, const int8_t *w, int K, int stride, int pad,
+                       int shift, int relu, int8_t *y, int Ho, int Wo);
+
+// Each output pixel's K x K input patch as one row of Cy >= K*K*C: y[o][(ky*K + kx)*C + c],
+// zeros for padding and past K*K*C. A 1x1 conv over it is the dense K x K conv.
+void mmrt_im2col_ref(const int8_t *x, int H, int W, int C, int K, int stride, int pad, int8_t *y, int Ho, int Wo,
+                     int Cy);
+
 // y[t][n] = act(sat8(rnd((sum_c x[t*stride][c] * w[n][c] + bias[n]) >> shift))).
 void mmrt_conv1x1_ref(const int8_t *x, int T_in, int C, const int8_t *w, const int32_t *bias, int N,
                       int stride, int shift, int relu, int8_t *y, int T_out);

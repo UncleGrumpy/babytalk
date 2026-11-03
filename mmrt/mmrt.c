@@ -119,9 +119,10 @@ size_t mmrt_cache_weights(mmrt_model_t *m, size_t budget, mmrt_alloc_fn alloc, m
     for (int pass = 0; pass < 2; pass++)
         for (uint32_t i = 0; i < n; i++) {
             const mmrt_op_t *op = &m->ops[i];
-            if (op->kind != (pass ? MMRT_CONV1X1 : MMRT_DWCONV)) continue;
+            if (pass ? op->kind != MMRT_CONV1X1 : op->kind != MMRT_DWCONV && op->kind != MMRT_DWCONV2D) continue;
             const int C = m->tensors[op->in0].channels;
-            size_t bytes = pass ? mmrt_wgroup_bytes(C, op->wfmt) * (m->tensors[op->out].channels / 16) : (size_t)C * op->K;
+            size_t bytes = pass ? mmrt_wgroup_bytes(C, op->wfmt) * (m->tensors[op->out].channels / 16)
+                                : (size_t)C * op->K * (op->kind == MMRT_DWCONV2D ? op->K : 1);
             if (m->wcache_bytes + bytes > budget) goto done;
             int8_t *c = (int8_t *)alloc(bytes);
             if (!c) goto done;
@@ -399,14 +400,27 @@ const int8_t *mmrt_run(mmrt_model_t *m, const int8_t *input, int T_in, int *T_ou
         int Ty = Tx;
         if (op->kind == MMRT_DWCONV || op->kind == MMRT_CONV1X1) Ty = conv_out_len(Tx, op->K, op->stride, op->pad);
         if (op->kind == MMRT_MEAN) Ty = 1;
+        // 2-D ops: the input is H rows of W pixels
+        const int is2d = op->kind == MMRT_DWCONV2D || op->kind == MMRT_IM2COL;
+        const int W2 = op->W, H2 = W2 ? Tx / W2 : 0;
+        const int Ho = is2d ? conv_out_len(H2, op->K, op->stride, op->pad) : 0;
+        const int Wo = is2d ? conv_out_len(W2, op->K, op->stride, op->pad) : 0;
+        if (is2d) {
+            if (!W2 || H2 * W2 != Tx || Ho < 1 || Wo < 1) {
+                STREAM_END();
+                free(last);
+                return NULL;
+            }
+            Ty = Ho * Wo;
+        }
         int8_t *y = (int8_t *)alloc((size_t)Ty * Cy);
         if (!y) {
             STREAM_END();
             free(last);
             return NULL;
         }
-        const int8_t *w = op->kind == MMRT_CONV1X1 || op->kind == MMRT_DWCONV ? op_weights(m, i)
-                                                                              : (const int8_t *)(m->blob + op->w_off);
+        const int8_t *w = op->kind == MMRT_CONV1X1 || op->kind == MMRT_DWCONV || op->kind == MMRT_DWCONV2D
+                              ? op_weights(m, i) : (const int8_t *)(m->blob + op->w_off);
         switch (op->kind) {
         case MMRT_DWCONV:
 #ifdef MMRT_S3
@@ -426,6 +440,28 @@ const int8_t *mmrt_run(mmrt_model_t *m, const int8_t *input, int T_in, int *T_ou
                 mmrt_dwconv_port(x, Tx, Cx, w, op->K, op->stride, op->pad, op->shift, op->relu, y, Ty);
 #endif
 #endif
+            break;
+        case MMRT_DWCONV2D:
+#ifdef MMRT_S3
+            if (!mmrt_use_ref && Cx % 16 == 0)
+                mmrt_s3_dwconv2d(x, H2, W2, Cx, w, op->K, op->stride, op->pad, op->shift, op->relu, y, Ho, Wo);
+            else
+                mmrt_dwconv2d_ref(x, H2, W2, Cx, w, op->K, op->stride, op->pad, op->shift, op->relu, y, Ho, Wo);
+#else
+            if (mmrt_use_ref || Cx % 16)
+                mmrt_dwconv2d_ref(x, H2, W2, Cx, w, op->K, op->stride, op->pad, op->shift, op->relu, y, Ho, Wo);
+#ifdef MMRT_P4
+            else if (!SIMD_REACH(x) || !SIMD_REACH(y)
+                     || mmrt_dwconv2d_p4(x, H2, W2, Cx, w, op->K, op->stride, op->pad, op->shift, op->relu, y, Ho, Wo))
+                mmrt_dwconv2d_port(x, H2, W2, Cx, w, op->K, op->stride, op->pad, op->shift, op->relu, y, Ho, Wo);
+#else
+            else
+                mmrt_dwconv2d_port(x, H2, W2, Cx, w, op->K, op->stride, op->pad, op->shift, op->relu, y, Ho, Wo);
+#endif
+#endif
+            break;
+        case MMRT_IM2COL:
+            mmrt_im2col_ref(x, H2, W2, Cx, op->K, op->stride, op->pad, y, Ho, Wo, Cy);
             break;
         case MMRT_CONV1X1:
         {

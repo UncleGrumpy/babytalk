@@ -42,6 +42,10 @@ void mmrt_s3_conv1x1(const int8_t *x, int T_in, int C, const int8_t *w, int wfmt
 void mmrt_s3_dwconv(const int8_t *x, int T_in, int C, const int8_t *w, int K, int stride, int pad,
                     int shift, int relu, int8_t *y, int T_out);
 
+// The 2-D depthwise conv (as mmrt_dwconv2d_ref), output rows split across both cores.
+void mmrt_s3_dwconv2d(const int8_t *x, int H, int W, int C, const int8_t *w, int K, int stride, int pad,
+                      int shift, int relu, int8_t *y, int Ho, int Wo);
+
 // Reentrant, one core, no shared buffers (for callers outside the model executor, e.g. the
 // AtomVM NIFs): one output group of a matmul, y[t][0..16) = relu?(sat8(round_half_up(
 // (x[t] . w[i]) >> shift))) for T input rows C bytes apart, output rows y_stride bytes apart.

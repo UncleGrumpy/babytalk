@@ -490,6 +490,56 @@ void mmrt_s3_dwconv(const int8_t *x, int T_in, int C, const int8_t *w, int K, in
     run_parts(dw_part, &job);
 }
 
+// ---------------------------------------------------------------- 2-D depthwise
+typedef struct {
+    int nky, nkx, C, xrow, wrow, groups, KK16, shift, relu;
+} mmrt_s3_dw2d_t;
+void mmrt_s3_dw2d_px(int8_t *y, const int8_t *x, const int8_t *w, const mmrt_s3_dw2d_t *a);
+
+typedef struct {
+    const int8_t *x, *w;
+    int8_t *y;
+    int H, W, C, K, stride, pad, shift, relu, Ho, Wo;
+} dw2d_job_t;
+
+// output rows [b, e): one kernel call per pixel, its taps clipped to the image (padding adds
+// nothing, as in the 1-D driver)
+static void dw2d_rows(const dw2d_job_t *j, int b, int e)
+{
+    mmrt_s3_dw2d_t a = {0, 0, j->C, j->W * j->C, j->K * 16, j->C / 16, j->K * j->K * 16, j->shift, j->relu};
+    for (int oy = b; oy < e; oy++) {
+        const int iy0 = oy * j->stride - j->pad;
+        const int ky0 = iy0 < 0 ? -iy0 : 0, ky1 = iy0 + j->K > j->H ? j->H - iy0 : j->K;
+        a.nky = ky1 - ky0;
+        for (int ox = 0; ox < j->Wo; ox++) {
+            const int ix0 = ox * j->stride - j->pad;
+            const int kx0 = ix0 < 0 ? -ix0 : 0, kx1 = ix0 + j->K > j->W ? j->W - ix0 : j->K;
+            int8_t *yp = j->y + ((size_t)oy * j->Wo + ox) * j->C;
+            a.nkx = kx1 - kx0;
+            if (a.nky <= 0 || a.nkx <= 0) {  // every tap in the padding: round(0) = 0
+                memset(yp, 0, (size_t)j->C);
+                continue;
+            }
+            mmrt_s3_dw2d_px(yp, j->x + ((size_t)(iy0 + ky0) * j->W + ix0 + kx0) * j->C, j->w + (ky0 * j->K + kx0) * 16, &a);
+        }
+    }
+}
+
+static void dw2d_part(void *arg, int part)
+{
+    dw2d_job_t *j = (dw2d_job_t *)arg;
+    int b, e;
+    part_range(j->Ho, part, &b, &e);
+    dw2d_rows(j, b, e);
+}
+
+void mmrt_s3_dwconv2d(const int8_t *x, int H, int W, int C, const int8_t *w, int K, int stride, int pad,
+                      int shift, int relu, int8_t *y, int Ho, int Wo)
+{
+    dw2d_job_t job = {x, w, y, H, W, C, K, stride, pad, shift, relu, Ho, Wo};
+    run_parts(dw2d_part, &job);
+}
+
 void mmrt_s3_tail(const int8_t *a, const int8_t *s, const int8_t *r, int T, int C, int shift, int relu, int8_t *y)
 {
     mmrt_s3_tail_t t = {C / 16, shift, relu};

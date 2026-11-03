@@ -34,6 +34,47 @@ void mmrt_dwconv_ref(const int8_t *x, int T_in, int C, const int8_t *w, int K, i
     }
 }
 
+void mmrt_dwconv2d_ref(const int8_t *x, int H, int W, int C, const int8_t *w, int K, int stride, int pad,
+                       int shift, int relu, int8_t *y, int Ho, int Wo)
+{
+    for (int oy = 0; oy < Ho; oy++)
+        for (int ox = 0; ox < Wo; ox++)
+            for (int c = 0; c < C; c++) {
+                const int8_t *wc = w + (c / 16) * K * K * 16 + (c % 16);
+                int32_t acc = 0;
+                for (int ky = 0; ky < K; ky++) {
+                    int iy = oy * stride + ky - pad;
+                    if (iy < 0 || iy >= H) continue;
+                    for (int kx = 0; kx < K; kx++) {
+                        int ix = ox * stride + kx - pad;
+                        if (ix >= 0 && ix < W) acc += x[((int64_t)iy * W + ix) * C + c] * wc[(ky * K + kx) * 16];
+                    }
+                }
+                track(acc);
+                int64_t v = rshift_rnd(acc, shift);
+                y[((int64_t)oy * Wo + ox) * C + c] = sat8(relu && v < 0 ? 0 : v);
+            }
+}
+
+void mmrt_im2col_ref(const int8_t *x, int H, int W, int C, int K, int stride, int pad, int8_t *y, int Ho, int Wo,
+                     int Cy)
+{
+    for (int oy = 0; oy < Ho; oy++)
+        for (int ox = 0; ox < Wo; ox++) {
+            int8_t *yr = y + ((int64_t)oy * Wo + ox) * Cy;
+            for (int i = 0; i < Cy; i++) yr[i] = 0;
+            for (int ky = 0; ky < K; ky++) {
+                int iy = oy * stride + ky - pad;
+                if (iy < 0 || iy >= H) continue;
+                for (int kx = 0; kx < K; kx++) {
+                    int ix = ox * stride + kx - pad;
+                    if (ix < 0 || ix >= W) continue;
+                    for (int c = 0; c < C; c++) yr[(ky * K + kx) * C + c] = x[((int64_t)iy * W + ix) * C + c];
+                }
+            }
+        }
+}
+
 void mmrt_conv1x1_ref(const int8_t *x, int T_in, int C, const int8_t *w, const int32_t *bias, int N,
                       int stride, int shift, int relu, int8_t *y, int T_out)
 {

@@ -30,6 +30,31 @@ void mmrt_dwconv_port(const int8_t *x, int T_in, int C, const int8_t *w, int K, 
     }
 }
 
+void mmrt_dwconv2d_port(const int8_t *x, int H, int W, int C, const int8_t *w, int K, int stride, int pad,
+                        int shift, int relu, int8_t *y, int Ho, int Wo)
+{
+    for (int oy = 0; oy < Ho; oy++) {
+        const int iy0 = oy * stride - pad;
+        const int ky0 = iy0 < 0 ? -iy0 : 0, ky1 = iy0 + K > H ? H - iy0 : K;
+        for (int ox = 0; ox < Wo; ox++) {
+            const int ix0 = ox * stride - pad;
+            const int kx0 = ix0 < 0 ? -ix0 : 0, kx1 = ix0 + K > W ? W - ix0 : K;
+            int8_t *yp = y + ((size_t)oy * Wo + ox) * C;
+            for (int g = 0; g < C / 16; g++) {
+                const int8_t *wg = w + (size_t)g * K * K * 16;
+                int32_t acc[16] = {0};
+                for (int ky = ky0; ky < ky1; ky++)
+                    for (int kx = kx0; kx < kx1; kx++) {
+                        const int8_t *xr = x + ((size_t)(iy0 + ky) * W + ix0 + kx) * C + g * 16;
+                        const int8_t *wk = wg + (ky * K + kx) * 16;
+                        for (int j = 0; j < 16; j++) acc[j] += xr[j] * wk[j];
+                    }
+                for (int j = 0; j < 16; j++) yp[g * 16 + j] = out8(acc[j], shift, relu);
+            }
+        }
+    }
+}
+
 void mmrt_conv1x1_port(const int8_t *x, int T_in, int C, const int8_t *w, const int32_t *bias, int N,
                        int stride, int shift, int relu, int8_t *y, int T_out)
 {
@@ -328,6 +353,84 @@ int mmrt_dwconv_p4(const int8_t *x, int T_in, int C, const int8_t *w, int K, int
     if (!s_dw_p4_ok || shift < 0 || shift > 13 || C % 16 || ((uintptr_t)x | (uintptr_t)w | (uintptr_t)y) & 15)
         return -1;
     dw_p4(x, T_in, C, w, K, stride, pad, shift, relu, y, T_out);
+    return 0;
+}
+#endif
+
+#ifdef MMRT_P4
+// ---- the 2-D depthwise conv: one vector-kernel call per output pixel, taps clipped to the image,
+// output rows split across both cores
+typedef struct {
+    int nky, nkx, C, xrow, wrow, groups, KK16, shift, relu, pad_[3];
+    int8_t rnd_a[16], rnd_b[16];
+} __attribute__((aligned(16))) mmrt_p4_dw2d_t;
+void mmrt_p4_dw2d_px(int8_t *y, const int8_t *x, const int8_t *w, const mmrt_p4_dw2d_t *a);
+
+typedef struct {
+    const int8_t *x, *w;
+    int8_t *y;
+    int H, W, C, K, stride, pad, shift, relu, Ho, Wo;
+} dw2d_job_t;
+
+static void dw2d_rows(void *arg, int b, int e)
+{
+    const dw2d_job_t *j = (const dw2d_job_t *)arg;
+    mmrt_p4_dw2d_t a = {0, 0, j->C, j->W * j->C, j->K * 16, j->C / 16, j->K * j->K * 16, j->shift, j->relu,
+                        {0, 0, 0}, {0}, {0}};
+    rnd_factors(a.rnd_a, a.rnd_b, j->shift);
+    for (int oy = b; oy < e; oy++) {
+        const int iy0 = oy * j->stride - j->pad;
+        const int ky0 = iy0 < 0 ? -iy0 : 0, ky1 = iy0 + j->K > j->H ? j->H - iy0 : j->K;
+        a.nky = ky1 - ky0;
+        for (int ox = 0; ox < j->Wo; ox++) {
+            const int ix0 = ox * j->stride - j->pad;
+            const int kx0 = ix0 < 0 ? -ix0 : 0, kx1 = ix0 + j->K > j->W ? j->W - ix0 : j->K;
+            int8_t *yp = j->y + ((size_t)oy * j->Wo + ox) * j->C;
+            a.nkx = kx1 - kx0;
+            if (a.nky <= 0 || a.nkx <= 0) {
+                memset(yp, out8(0, j->shift, j->relu), (size_t)j->C);
+                continue;
+            }
+            mmrt_p4_dw2d_px(yp, j->x + ((size_t)(iy0 + ky0) * j->W + ix0 + kx0) * j->C, j->w + (ky0 * j->K + kx0) * 16, &a);
+        }
+    }
+}
+
+static int s_dw2d_p4_ok = -1;
+
+// against the portable kernel on small images: kernel sizes 1..7, strides 1 and 2, every shift
+static int dw2d_p4_check(void)
+{
+    enum { C = 32, H = 9, W = 11, KMAX = 7 };
+    static int8_t x[H * W * C] __attribute__((aligned(16))), w[C * KMAX * KMAX] __attribute__((aligned(16))),
+        y1[H * W * C] __attribute__((aligned(16))), y2[H * W * C] __attribute__((aligned(16)));
+    uint32_t r = 4321;
+    for (int trial = 0; trial < 42; trial++) {
+        for (int i = 0; i < H * W * C; i++) x[i] = (int8_t)((r = r * 1103515245 + 12345) >> 16);
+        for (int i = 0; i < C * KMAX * KMAX; i++) w[i] = (int8_t)((r = r * 1103515245 + 12345) >> 16);
+        const int K = 1 + trial % KMAX, stride = 1 + trial % 2, pad = trial % 3 == 2 ? 0 : (K - 1) / 2,
+                  shift = trial % 14, relu = trial & 1;
+        const int Ho = (H + 2 * pad - K) / stride + 1, Wo = (W + 2 * pad - K) / stride + 1;
+        mmrt_dwconv2d_port(x, H, W, C, w, K, stride, pad, shift, relu, y1, Ho, Wo);
+        dw2d_job_t j = {x, w, y2, H, W, C, K, stride, pad, shift, relu, Ho, Wo};
+        dw2d_rows(&j, 0, Ho);
+        if (memcmp(y1, y2, (size_t)Ho * Wo * C)) {
+            printf("mmrt: the P4 2-D depthwise kernel differs from the portable one (K %d stride %d shift %d): not used\n",
+                   K, stride, shift);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int mmrt_dwconv2d_p4(const int8_t *x, int H, int W, int C, const int8_t *w, int K, int stride, int pad,
+                     int shift, int relu, int8_t *y, int Ho, int Wo)
+{
+    if (s_dw2d_p4_ok < 0) s_dw2d_p4_ok = dw2d_p4_check();
+    if (!s_dw2d_p4_ok || shift < 0 || shift > 13 || C % 16 || ((uintptr_t)x | (uintptr_t)w | (uintptr_t)y) & 15)
+        return -1;
+    dw2d_job_t j = {x, w, y, H, W, C, K, stride, pad, shift, relu, Ho, Wo};
+    split_frames(dw2d_rows, &j, Ho);
     return 0;
 }
 #endif

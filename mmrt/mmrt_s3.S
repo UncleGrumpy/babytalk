@@ -333,3 +333,78 @@ mmrt_s3_cb4_rows:
 .Lcb4_done:
     retw
     .size   mmrt_s3_cb4_rows, .-mmrt_s3_cb4_rows
+
+// void mmrt_s3_dw2d_px(int8_t *y, const int8_t *x, const int8_t *w, const mmrt_s3_dw2d_t *a)
+//
+// One output pixel of a 2-D depthwise conv, all channel groups: mmrt_s3_dw_row with an outer
+// loop over the kernel's rows. The C driver clips the taps to the image and passes the first
+// valid one:
+//   x: input pixel of the first valid tap (+ g*16 per group): pixels C bytes apart, rows xrow
+//   w: [groups][K*K][16] weights at the first valid tap of group 0: kernel rows wrow (K*16) apart
+//   a: +0 nky, +4 nkx (valid tap rows and columns, >= 1), +8 C, +12 xrow, +16 wrow, +20 groups,
+//      +24 KK16 (group stride of w: K*K*16), +28 shift (>= 0), +32 relu
+// Per group: QACC[i] = sum over the valid taps of x[i] * w[i], rounded as for 1x1.
+    .align 4
+    .global mmrt_s3_dw2d_px
+    .type   mmrt_s3_dw2d_px, @function
+mmrt_s3_dw2d_px:
+    entry   a1, 32
+    l32i    a7, a5, 8           // C (bytes between pixels)
+    l32i    a8, a5, 20          // groups
+    l32i    a14, a5, 4          // nkx
+    addi    a14, a14, -1        // taps looped per row: nkx - 1 (the last is peeled)
+    movi    a12, 0x101
+    slli    a13, a12, 16
+    or      a12, a12, a13
+    ee.movi.32.q q7, a12, 0
+    ee.movi.32.q q7, a12, 1
+    ee.movi.32.q q7, a12, 2
+    ee.movi.32.q q7, a12, 3
+    ee.zero.q q6
+
+.Ldw2_group:
+    mov     a10, a3             // x: this group's first tap row
+    mov     a11, a4             // w: this group's first tap row
+    l32i    a6, a5, 0           // nky
+    ee.zero.qacc
+.Ldw2_row:
+    mov     a9, a10
+    mov     a13, a11
+    ee.vld.128.xp q0, a9, a7    // x tap 0 of this row
+    ee.vld.128.ip q1, a13, 16   // w tap 0 of this row
+    loopgtz a14, .Ldw2_last
+    ee.vmulas.s8.qacc.ld.ip q1, a13, 16, q0, q1     // acc += x*w; next w
+    ee.vld.128.xp q0, a9, a7                        // next x
+.Ldw2_last:
+    ee.vmulas.s8.qacc q0, q1
+    l32i    a12, a5, 12         // xrow
+    add     a10, a10, a12
+    l32i    a12, a5, 16         // wrow
+    add     a11, a11, a12
+    addi    a6, a6, -1
+    bnez    a6, .Ldw2_row
+
+    l32i    a10, a5, 28         // shift
+    beqz    a10, .Ldw2_shift0
+    addi    a12, a10, -1
+    ee.srcmb.s8.qacc q3, a12, 0
+    movi    a12, 1
+    ee.movi.32.q q3, a12, 0
+    ee.vsmulas.s8.qacc q7, q3, 0
+    ee.srcmb.s8.qacc q3, a12, 0
+    j       .Ldw2_rounded
+.Ldw2_shift0:
+    ee.srcmb.s8.qacc q3, a10, 0
+.Ldw2_rounded:
+    l32i    a12, a5, 32         // relu
+    beqz    a12, .Ldw2_store
+    ee.vmax.s8 q3, q3, q6
+.Ldw2_store:
+    ee.vst.128.ip q3, a2, 16
+    addi    a3, a3, 16          // next channel group
+    l32i    a12, a5, 24         // KK16
+    add     a4, a4, a12
+    addi    a8, a8, -1
+    bnez    a8, .Ldw2_group
+    retw
+    .size   mmrt_s3_dw2d_px, .-mmrt_s3_dw2d_px
