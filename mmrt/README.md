@@ -96,6 +96,25 @@ features, decoding, wake phrases) is `components/stt_engine/`, and the ESP-IDF c
 | `mmrt_s3.c/.h` | drivers: weight staging, two-core split, streaming, fusion, buffers |
 | `mmrt_port.c/.h` | portable kernels for other chips, bit-exact with the reference; on the P4 also the drivers for its vector kernels (two-core split, self-checks) |
 | `mmrt_p4.S` | the ESP32-P4's vector kernels: int8 dot product, depthwise conv, one 1x1 group from the packed layout (the `mmrt` NIFs' matmul) |
+| `mmrt_f32.c/.h` | float32 ops for the layers around a graph: linear, layernorm, softmax, ReLU, multi-head attention |
+
+### Building your own model on MMRT
+
+MMRT is meant to be linked by other projects, not only BabyTalk's speech engine. A model
+that isn't a straight line of convolutions can still run its convolutional part as a
+`.mmrt` graph (`mmrt_run`) and do the rest in its own code with MMRT's ops:
+
+- **int8:** the kernels' public headers (`mmrt_s3.h`, `mmrt_port.h`, `mmrt_ref.h`), e.g.
+  `mmrt_s3_matmul_group`, made for callers outside the executor.
+- **float32:** `mmrt_f32.h` for small dense layers: a linear layer that reads each weight
+  row once for all input rows (so weights can stay in memory-mapped flash), layernorm,
+  softmax, ReLU, and the core of multi-head self-attention. Weights use PyTorch's layouts.
+  `export/mmrt_check_f32.py` checks them against NumPy.
+
+`MMRT_API_VERSION` in `mmrt.h` changes when a public signature does; pin the MMRT commit you
+build against (e.g. a git submodule) and check the version if you track it loosely.
+[Dink](https://github.com/tlack/dink-model), a 204K-parameter decision model, is built this
+way: its text encoder is a `.mmrt` graph, and its attention mixer uses `mmrt_f32.h`.
 
 ## Results (Waveshare ESP32-S3-CAM, ESP-IDF app, milliseconds of model time)
 
