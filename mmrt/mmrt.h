@@ -23,8 +23,8 @@ extern "C" {
 #define MMRT_VERSION 3  // 3: 2-D ops (DWCONV2D, IM2COL, mmrt_op_t.W); 2: per-op weight format (wfmt); older files still load
 // The C API's version (mmrt.h, mmrt_f32.h and the kernels' public headers): bumped when a
 // public signature changes, so code built on MMRT can check what it compiles against.
-// 1: mmrt_f32.h added.
-#define MMRT_API_VERSION 1
+// 1: mmrt_f32.h added. 2: the 2-D ops (MMRT_DWCONV2D, MMRT_IM2COL, their kernels, mmrt_op_t.W).
+#define MMRT_API_VERSION 2
 
 typedef enum {
     MMRT_DWCONV = 1,   // depthwise conv, weights [C/16][K][16], no bias
