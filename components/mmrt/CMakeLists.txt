@@ -7,7 +7,7 @@
 # and on the P4 its 1x1 convolutions as row dot products on its vector unit (mmrt_p4.S).
 get_filename_component(HERE "${CMAKE_CURRENT_LIST_DIR}" REALPATH)  # this dir may be a symlink
 get_filename_component(R "${HERE}/../../mmrt" ABSOLUTE)
-set(srcs "${R}/mmrt.c" "${R}/mmrt_ref.c")
+set(srcs "${R}/mmrt.c" "${R}/mmrt_ref.c" "${R}/mmrt_f32.c")
 if(IDF_TARGET STREQUAL "esp32s3")
     list(APPEND srcs "${R}/mmrt_s3.c" "${R}/mmrt_s3.S")
 else()

@@ -20,6 +20,10 @@ extern "C" {
 
 #define MMRT_MAGIC 0x54524d4du  // "MMRT"
 #define MMRT_VERSION 2  // 2: per-op weight format (wfmt); version-1 files (all int8) still load
+// The C API's version (mmrt.h, mmrt_f32.h and the kernels' public headers): bumped when a
+// public signature changes, so code built on MMRT can check what it compiles against.
+// 1: mmrt_f32.h added.
+#define MMRT_API_VERSION 1
 
 typedef enum {
     MMRT_DWCONV = 1,   // depthwise conv, weights [C/16][K][16], no bias
