@@ -242,17 +242,59 @@ static int pi_set(uint8_t addr, int pin, bool level)
     return 0;
 }
 
-// Drive one pin of a PI4IOE5V6408 without an audio configuration of it: any of the eight pins,
-// on any expander the bus carries. Brings the I2C bus up if the audio board hasn't (the first
-// caller's pins win). 0, or -1 (bus, pins, address or pin) or -2 (nothing answered).
-int board_audio_pin_set(int i2c_port, int sda, int scl, int hz, uint8_t addr, int pin, int level)
+// Set a pin of the Waveshare CH32V003 expander (a write-only latch: no per-pin direction --
+// first use makes all eight pins outputs, all low)
+static int ch_set(uint8_t addr, int pin, bool level)
+{
+    i2c_master_dev_handle_t d = dev(addr);
+    int i = ch_slot(addr);
+    if (i < 0) {  // first use: all eight pins outputs, all low
+        i = s_ch[0].used ? 1 : 0;
+        if (s_ch[i].used || wr(d, 0x02, 0xFF)) return -1;
+        s_ch[i].used = true;
+        s_ch[i].addr = addr;
+        s_ch[i].out = 0;
+    }
+    uint8_t v = level ? (s_ch[i].out | (1 << pin)) : (s_ch[i].out & ~(1 << pin));
+    if (wr(d, 0x03, v)) return -1;
+    s_ch[i].out = v;
+    return 0;
+}
+
+// Set a pin of a PCA9555 / TCA9555 / XL9555 (16 pins: output registers 0x02/0x03, direction
+// 0x06/0x07, a direction bit 0 = output); `setup` the first time (its direction)
+static int pca_set(uint8_t addr, int pin, bool level, bool setup)
+{
+    i2c_master_dev_handle_t d = dev(addr);
+    const uint8_t port = pin >> 3, bit = 1 << (pin & 7);
+    uint8_t v;
+    if (rd(d, 0x02 + port, &v) || wr(d, 0x02 + port, level ? (v | bit) : (v & ~bit))) return -1;
+    if (setup && (rd(d, 0x06 + port, &v) || wr(d, 0x06 + port, v & ~bit))) return -1;
+    return 0;
+}
+
+// Drive one pin of an IO expander without an audio configuration of it: any pin, of any
+// expander of the kinds the amp/rail switches take. Brings the I2C bus up if the audio board
+// hasn't (the first caller's pins win). `kind` is a BA_CTL_* expander kind; the pin range is
+// the kind's. 0, or -1 (bus, pins, kind, address or pin) or -2 (nothing answered).
+int board_audio_pin_set(int i2c_port, int sda, int scl, int hz, int kind, uint8_t addr, int pin,
+                        int level)
 {
     if (i2c_port < 0 || i2c_port >= SOC_I2C_NUM) return -1;
     if (!pin_ok(sda, true) || !pin_ok(scl, true)) return -1;
     if (hz < 10000 || hz > 1000000) return -1;
-    if (!addr_ok(addr) || pin < 0 || pin > 7) return -1;
+    const board_audio_ctl_t ctl = {.kind = (int8_t) kind, .addr = addr, .pin = (int8_t) pin,
+                                   .active_low = 0};
+    if (!ctl_ok(&ctl)) return -1;
     if (bus_up(i2c_port, sda, scl, hz)) return -1;
-    return pi_set(addr, pin, level != 0) ? -2 : 0;
+    int r;
+    switch (kind) {
+    case BA_CTL_CH32V003:     r = ch_set(addr, pin, level != 0); break;
+    case BA_CTL_PCA9555:      r = pca_set(addr, pin, level != 0, true); break;
+    case BA_CTL_PI4IOE5V6408: r = pi_set(addr, pin, level != 0); break;
+    default: return -1;  // ctl_ok lets a GPIO through; that is not an expander
+    }
+    return r ? -2 : 0;
 }
 
 // Set a switch on or off; `setup` the first time (the pin's direction)
@@ -266,29 +308,10 @@ static int ctl_set(const board_audio_ctl_t *c, bool on, bool setup)
             if (gpio_config(&g) != ESP_OK) return -1;
         }
         return gpio_set_level(c->pin, level) == ESP_OK ? 0 : -1;
-    case BA_CTL_CH32V003: {
-        i2c_master_dev_handle_t d = dev(c->addr);
-        int i = ch_slot(c->addr);
-        if (i < 0) {  // first use: all eight pins outputs, all low
-            i = s_ch[0].used ? 1 : 0;
-            if (s_ch[i].used || wr(d, 0x02, 0xFF)) return -1;
-            s_ch[i].used = true;
-            s_ch[i].addr = c->addr;
-            s_ch[i].out = 0;
-        }
-        uint8_t v = level ? (s_ch[i].out | (1 << c->pin)) : (s_ch[i].out & ~(1 << c->pin));
-        if (wr(d, 0x03, v)) return -1;
-        s_ch[i].out = v;
-        return 0;
-    }
-    case BA_CTL_PCA9555: {  // output registers 0x02/0x03, direction 0x06/0x07 (0 = output)
-        i2c_master_dev_handle_t d = dev(c->addr);
-        const uint8_t port = c->pin >> 3, bit = 1 << (c->pin & 7);
-        uint8_t v;
-        if (rd(d, 0x02 + port, &v) || wr(d, 0x02 + port, level ? (v | bit) : (v & ~bit))) return -1;
-        if (setup && (rd(d, 0x06 + port, &v) || wr(d, 0x06 + port, v & ~bit))) return -1;
-        return 0;
-    }
+    case BA_CTL_CH32V003:
+        return ch_set(c->addr, c->pin, level);
+    case BA_CTL_PCA9555:
+        return pca_set(c->addr, c->pin, level, setup);
     case BA_CTL_PI4IOE5V6408:  // any of its eight pins (pi_set)
         return pi_set(c->addr, c->pin, level);
     default:

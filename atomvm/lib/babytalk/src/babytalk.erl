@@ -12,7 +12,7 @@
 %% AtomVM binds NIFs only to external calls (Module:Fun), so NIFs wrapped here are exported
 %% and called as ?MODULE:name_nif(...).
 -export([transcribe_nif/1, listen_nif/1, say_nif/2, play_nif/3, tones_nif/2,
-         audio_config_nif/1, audio_current_nif/0, audio_presets_nif/0, io_pin_set_nif/4]).
+         audio_config_nif/1, audio_current_nif/0, audio_presets_nif/0, io_pin_set_nif/5]).
 
 -type info() :: [{score, float() | undefined} | {span, {integer(), integer()}} | {frames, integer()}
                  | {fe_ms | model_ms | dec_ms, float()}].
@@ -267,35 +267,45 @@ audio_config_nif(_Tuple) -> erlang:nif_error(undefined).
 audio_current_nif() -> erlang:nif_error(undefined).
 audio_presets_nif() -> erlang:nif_error(undefined).
 
-%% Set one pin (0..7) of a PI4IOE5V6408 IO expander high (1) or low (0), whatever the audio
-%% configuration does with the expander's other pins. I2c is the i2c section audio_config/1
-%% takes: #{port => P, sda => P, scl => P, speed_hz => Hz (default 100000)}.
+%% Drive one pin of an IO expander high (1) or low (0), whatever the audio configuration does
+%% with the expander's other pins. Part names the chip the way the amp/power switches in
+%% audio_config/1 do: {ch32v003, Addr} (Waveshare's, pins 0..7), {pca9555, Addr} (also
+%% TCA9555, XL9555; pins 0..15) or {pi4ioe5v6408, Addr} (pins 0..7). I2c is the i2c section
+%% audio_config/1 takes: #{port => P, sda => P, scl => P, speed_hz => Hz (default 100000)}.
 %%
 %% The driver has one I2C bus, shared with the audio board: if the board isn't up yet the bus
 %% comes up here on these pins, and a later audio_config/1 shares it (its pins then don't
-%% matter). Errors: {error, i2c_bus} (the bus or the pins), {error, pin} (the expander didn't
-%% answer), {error, {bad_value, Where}}.
+%% matter). Errors: {error, i2c_bus} (the bus or the pins, or the pin out of range for the
+%% expander), {error, pin} (the expander didn't answer), {error, {bad_value, [expander]}},
+%% {error, {unknown_key, [i2c, K]}}.
 %%
 %% For a board part that is a switched expander pin rather than an amp or a rail: the M5Stack
-%% Tab5 switches its on-board C6 (WiFi) with pin 0 of the expander at 0x44 (WLAN_PWR_EN, on the
-%% board's I2C: SDA 31, SCL 32). The C6 has to be powered before its SDIO bring-up at boot, so
-%% this is an app's first act -- see the README.
--spec io_pin_set(map(), 0..127, 0..7, 0 | 1) -> ok | {error, term()}.
-io_pin_set(I2c, Addr, Pin, Level) when is_map(I2c) ->
+%% Tab5 switches its on-board C6 (WiFi) with pin 0 of its PI4IOE5V6408 at 0x44 (WLAN_PWR_EN,
+%% on the board's I2C: SDA 31, SCL 32). The C6 has to be powered before its SDIO bring-up at
+%% boot, so this is an app's first act -- see the README.
+-spec io_pin_set(map(), {ch32v003 | pca9555 | pi4ioe5v6408, 0..127}, 0..15, 0 | 1) -> ok | {error, term()}.
+io_pin_set(I2c, {Exp, Addr}, Pin, Level) when is_map(I2c), is_atom(Exp) ->
     try
         Port = maps:get(port, I2c), Sda = maps:get(sda, I2c), Scl = maps:get(scl, I2c),
         _ = enc(int, Port, [i2c, port]),
         _ = enc(pin, Sda, [i2c, sda]),
         _ = enc(pin, Scl, [i2c, scl]),
-        ?MODULE:io_pin_set_nif({Port, Sda, Scl, maps:get(speed_hz, I2c, 100000)}, Addr, Pin, Level)
+        ?MODULE:io_pin_set_nif({Port, Sda, Scl, maps:get(speed_hz, I2c, 100000)},
+                               exp_to(Exp), Addr, Pin, Level)
     catch
         throw:E -> {error, E};
         error:{badkey, K} -> {error, {unknown_key, [i2c, K]}}
     end;
-io_pin_set(_I2c, _Addr, _Pin, _Level) ->
-    {error, {bad_value, [i2c]}}.
+io_pin_set(_I2c, _Part, _Pin, _Level) ->
+    {error, {bad_value, [expander]}}.
 
-io_pin_set_nif(_I2c, _Addr, _Pin, _Level) -> erlang:nif_error(undefined).
+io_pin_set_nif(_I2c, _Kind, _Addr, _Pin, _Level) -> erlang:nif_error(undefined).
+
+%% An expander atom -> the BA_CTL_* kind number the C side dispatches on (switch_to's encoding).
+exp_to(ch32v003) -> 2;
+exp_to(pca9555) -> 3;
+exp_to(pi4ioe5v6408) -> 4;
+exp_to(_Exp) -> throw({bad_value, [expander]}).
 
 apply_audio(Tuple) ->
     case ?MODULE:audio_config_nif(Tuple) of
@@ -358,7 +368,7 @@ switch_to({gpio, Pin}, _) when is_integer(Pin) -> [1, 0, Pin, 0];
 switch_to({gpio, Pin, active_low}, _) when is_integer(Pin) -> [1, 0, Pin, 1];
 switch_to({Exp, Addr, Pin}, W) -> switch_to({Exp, Addr, Pin, active_high}, W);
 switch_to({Exp, Addr, Pin, Pol}, W) when is_integer(Addr), is_integer(Pin), (Pol =:= active_low orelse Pol =:= active_high) ->
-    Kind = case Exp of ch32v003 -> 2; pca9555 -> 3; pi4ioe5v6408 -> 4; _ -> throw({bad_value, [W]}) end,
+    Kind = case Exp of ch32v003 -> 2; pca9555 -> 3; pi4ioe5v6408 -> 4; _ -> throw({bad_value, [W]}) end,  %% exp_to's encoding, with the switch's section in the error
     [Kind, Addr, Pin, case Pol of active_low -> 1; active_high -> 0 end];
 switch_to(_, W) -> throw({bad_value, [W]}).
 

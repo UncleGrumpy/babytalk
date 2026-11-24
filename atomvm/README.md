@@ -297,13 +297,15 @@ Tab5 its WiFi. Nothing else drives that pin, so the C6 stays off -- and `esp_hos
 a link -- until the app says so:
 
 ```erlang
-ok = babytalk:io_pin_set(#{port => 0, sda => 31, scl => 32}, 16#44, 0, 1),   % the C6's rail on
-ok = babytalk:audio_config(m5stack_tab5).                                    % the Tab5's codecs
+ok = babytalk:io_pin_set(#{port => 0, sda => 31, scl => 32}, {pi4ioe5v6408, 16#44}, 0, 1),  % the C6's rail on
+ok = babytalk:audio_config(m5stack_tab5).                                                   % the Tab5's codecs
 ```
 
-`io_pin_set(I2c, Addr, Pin, Level)` takes the same `i2c` section `audio_config/1` does (`sda`
-31, `scl` 32 is the Tab5's system I2C), an expander address, a pin 0..7 and a level (0 or 1).
-It drives **only that pin**: the expander's others keep their direction and level, which here
+`io_pin_set(I2c, {Expander, Addr}, Pin, Level)` takes the same `i2c` section `audio_config/1`
+does (`sda` 31, `scl` 32 is the Tab5's system I2C), and names the chip the way the amp and
+power switches do: `{ch32v003, Addr}` (pins 0..7), `{pca9555, Addr}` (also TCA9555, XL9555;
+pins 0..15) or `{pi4ioe5v6408, Addr}` (pins 0..7), then a pin and a level (0 or 1). It drives
+**only that pin**: the expander's others keep their direction and level, which here
 matters -- the Tab5's `0x44` also switches its USB rail, its charge enable and its power-off
 pulse, and driving those as outputs is not what an app wants.
 
@@ -496,9 +498,10 @@ receive {babytalk_play, R, done} -> ok end.
 - **`audio_config(Board | Changes) -> ok | {error, term()}`**: use another board.
 - **`audio_preset(Name) -> {ok, Map} | {error, {unknown_board, Name}}`**: a preset's full map.
 - **`audio_presets() -> [Name]`**: the presets compiled in.
-- **`io_pin_set(I2c, Addr, Pin, Level) -> ok | {error, term()}`**: one pin (0..7) of a
-  PI4IOE5V6408 expander, whatever the audio config does with the expander's other pins: for a
-  board part that is neither an amp nor a rail (the Tab5's C6: [above](#a-switched-board-part-on-an-expander-pin-the-tab5s-c6)).
+- **`io_pin_set(I2c, {Expander, Addr}, Pin, Level) -> ok | {error, term()}`**: one pin of an
+  IO expander -- any kind the amp/power switches take -- whatever the audio config does with
+  the expander's other pins: for a board part that is neither an amp nor a rail
+  (the Tab5's C6: [above](#a-switched-board-part-on-an-expander-pin-the-tab5s-c6)).
 
 Keys, examples and errors: [Boards and pins](#boards-and-pins).
 

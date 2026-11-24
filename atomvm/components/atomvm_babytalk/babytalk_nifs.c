@@ -23,8 +23,10 @@
 //   babytalk:audio_current_nif() -> Tuple | undefined (custom board)
 //   babytalk:audio_presets_nif() -> [{Name, Tuple}]
 //       (Tuple: board_audio_config_t flattened, in babytalk.erl's order; the maps live in Erlang)
-//   babytalk:io_pin_set_nif({Port, SDA, SCL, Hz}, Addr, Pin, Level) -> ok | {error, i2c_bus | pin}
-//       one pin of a PI4IOE5V6408, on a bus brought up here if the board isn't up yet
+//   babytalk:io_pin_set_nif({Port, SDA, SCL, Hz}, Kind, Addr, Pin, Level)
+//       -> ok | {error, i2c_bus | pin}
+//       one pin of an IO expander (Kind: a BA_CTL_* expander kind), on a bus brought up here
+//       if the board isn't up yet
 //
 // Inference (0.3-2 s) runs on our own FreeRTOS task, never on a scheduler: AtomVM has no
 // dirty NIFs. The model is the "model" flash partition (components/stt_engine).
@@ -747,10 +749,11 @@ static term nif_audio_presets(Context *ctx, int argc, term argv[])
     return list;
 }
 
-// io_pin_set_nif({Port, SDA, SCL, Hz}, Addr, Pin, Level) -> ok | {error, i2c_bus | pin}
-// One pin of a PI4IOE5V6408, for a board part that is neither the amp nor a rail: the M5Stack
-// Tab5's on-board C6 is pin 0 of the expander at 0x44, and has to be powered before its SDIO
-// bring-up at boot. The expander's other pins keep their direction and level.
+// io_pin_set_nif({Port, SDA, SCL, Hz}, Kind, Addr, Pin, Level) -> ok | {error, i2c_bus | pin}
+// One pin of an IO expander, for a board part that is neither the amp nor a rail: the M5Stack
+// Tab5's on-board C6 is pin 0 of its PI4IOE5V6408 at 0x44, and has to be powered before its
+// SDIO bring-up at boot. Kind is a BA_CTL_* expander kind (2 ch32v003, 3 pca9555, 4
+// pi4ioe5v6408); the expander's other pins keep their direction and level.
 static term nif_io_pin_set(Context *ctx, int argc, term argv[])
 {
     UNUSED(argc);
@@ -759,6 +762,7 @@ static term nif_io_pin_set(Context *ctx, int argc, term argv[])
     VALIDATE_VALUE(argv[1], term_is_integer);
     VALIDATE_VALUE(argv[2], term_is_integer);
     VALIDATE_VALUE(argv[3], term_is_integer);
+    VALIDATE_VALUE(argv[4], term_is_integer);
     if (UNLIKELY(memory_ensure_free(ctx, TUPLE_SIZE(2)) != MEMORY_GC_OK)) RAISE_ERROR(OUT_OF_MEMORY_ATOM);
 #ifdef CONFIG_BABYTALK_BOARD_CUSTOM
     return error_tuple(&ctx->heap, atom(ctx->global, "\x0C" "custom_board"));
@@ -769,9 +773,11 @@ static term nif_io_pin_set(Context *ctx, int argc, term argv[])
         VALIDATE_VALUE(e, term_is_integer);
         v[i] = term_to_int(e);
     }
+    const avm_int_t kind = term_to_int(argv[1]);
+    if (kind < BA_CTL_CH32V003 || kind > BA_CTL_PI4IOE5V6408) RAISE_ERROR(BADARG_ATOM);
     const int r = board_audio_pin_set((int) v[0], (int) v[1], (int) v[2], (int) v[3],
-                                      (uint8_t) term_to_int(argv[1]), (int) term_to_int(argv[2]),
-                                      (int) term_to_int(argv[3]));
+                                      (int) kind, (uint8_t) term_to_int(argv[2]),
+                                      (int) term_to_int(argv[3]), (int) term_to_int(argv[4]));
     if (!r) return OK_ATOM;
     return error_tuple(&ctx->heap, atom(ctx->global, r == -2 ? "\x03" "pin" : "\x07" "i2c_bus"));
 #endif
@@ -906,7 +912,7 @@ static const struct {
     {"info/0", &info_nif}, {"heap_info/0", &heap_info_nif},
     {"audio_config_nif/1", &audio_config_nif}, {"audio_current_nif/0", &audio_current_nif},
     {"audio_presets_nif/0", &audio_presets_nif},
-    {"io_pin_set_nif/4", &io_pin_set_nif},
+    {"io_pin_set_nif/5", &io_pin_set_nif},
 };
 
 // The Elixir module BabyTalk delegates to :babytalk, so only "babytalk:..." names resolve here.
